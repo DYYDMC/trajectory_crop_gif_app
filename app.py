@@ -27,6 +27,7 @@ class TrajectoryCropApp:
 
         self.image_path: Path | None = None
         self.original_image: Image.Image | None = None
+        self.original_array_native: np.ndarray | None = None
         self.base_display_image: Image.Image | None = None
         self.display_image_tk: ImageTk.PhotoImage | None = None
         self.current_annotated_image: Image.Image | None = None
@@ -47,6 +48,8 @@ class TrajectoryCropApp:
         self.gif_frames: list[ImageTk.PhotoImage] = []
         self.gif_frame_idx = 0
         self.gif_after_id: str | None = None
+        self.latest_frames_unnormalized: np.ndarray | None = None
+        self.latest_frames_normalized_u8: np.ndarray | None = None
 
         self._build_ui()
         self.prompt_image_selection()
@@ -106,10 +109,12 @@ class TrajectoryCropApp:
             return
 
         try:
-            pil = Image.open(p)
-            if pil.mode not in ("L", "RGB", "RGBA"):
-                pil = pil.convert("RGB")
-            self.original_image = pil.copy()
+            with Image.open(p) as pil:
+                self.original_array_native = np.array(pil.copy())
+                display_pil = pil
+                if display_pil.mode not in ("L", "RGB", "RGBA"):
+                    display_pil = display_pil.convert("RGB")
+                self.original_image = display_pil.copy()
             self.image_path = p
         except Exception as exc:
             messagebox.showerror("Load failed", f"Could not load image:\n{exc}")
@@ -125,6 +130,8 @@ class TrajectoryCropApp:
         self.gif_frame_idx = 0
         self.crop_size = None
         self.sample_frequency = None
+        self.latest_frames_unnormalized = None
+        self.latest_frames_normalized_u8 = None
         self.reset_trajectory()
         self.refresh_display_image()
 
@@ -257,22 +264,29 @@ class TrajectoryCropApp:
 
     def generate_gif_preview(self) -> None:
         assert self.original_image is not None
+        assert self.original_array_native is not None
         assert self.crop_size is not None
         assert self.sample_frequency is not None
 
-        src = np.array(self.original_image)
+        src = self.original_array_native
         if src.ndim == 2:
-            # Keep pipeline RGB for GIF even when source is grayscale.
-            src_rgb = np.stack([src, src, src], axis=2).astype(np.float32)
+            src_native = np.stack([src, src, src], axis=2)
+        elif src.ndim == 3 and src.shape[2] >= 3:
+            src_native = src[..., :3]
+        elif src.ndim == 3 and src.shape[2] == 2:
+            # Convert two-channel (e.g., LA) inputs to RGB-like tensor.
+            src_native = np.stack([src[..., 0], src[..., 0], src[..., 0]], axis=2)
         else:
-            src_rgb = src[..., :3].astype(np.float32)
+            messagebox.showerror("Unsupported image", f"Unsupported image array shape: {src.shape}")
+            return
 
-        src_h, src_w, _ = src_rgb.shape
+        src_h, src_w, _ = src_native.shape
         half = self.crop_size // 2
 
         self.compute_sampled_points()
         sampled_disp = self.sampled_trajectory
 
+        frames_native = []
         frames_uint8 = []
         for (dx, dy) in sampled_disp:
             ox = int(round(dx / self.scale))
@@ -283,7 +297,7 @@ class TrajectoryCropApp:
             x1 = x0 + self.crop_size
             y1 = y0 + self.crop_size
 
-            crop = np.zeros((self.crop_size, self.crop_size, 3), dtype=np.float32)
+            crop_native = np.zeros((self.crop_size, self.crop_size, 3), dtype=src_native.dtype)
 
             sx0 = max(0, x0)
             sy0 = max(0, y0)
@@ -295,19 +309,23 @@ class TrajectoryCropApp:
                 ty0 = sy0 - y0
                 tx1 = tx0 + (sx1 - sx0)
                 ty1 = ty0 + (sy1 - sy0)
-                crop[ty0:ty1, tx0:tx1, :] = src_rgb[sy0:sy1, sx0:sx1, :]
+                crop_native[ty0:ty1, tx0:tx1, :] = src_native[sy0:sy1, sx0:sx1, :]
 
-            maxv = float(crop.max())
+            maxv = float(crop_native.max())
             if maxv > 0:
-                crop_norm = crop / maxv
+                crop_norm = crop_native.astype(np.float32) / maxv
             else:
-                crop_norm = crop
+                crop_norm = crop_native.astype(np.float32)
             crop_u8 = np.clip(crop_norm * 255.0, 0, 255).astype(np.uint8)
+            frames_native.append(crop_native)
             frames_uint8.append(crop_u8)
 
         if not frames_uint8:
             messagebox.showerror("No frames", "No frames could be generated from the sampled trajectory.")
             return
+
+        self.latest_frames_unnormalized = np.stack(frames_native, axis=-1)
+        self.latest_frames_normalized_u8 = np.stack(frames_uint8, axis=-1)
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         run_dir = self.base_output_dir / f"run_{ts}"
@@ -364,6 +382,9 @@ class TrajectoryCropApp:
         if len(self.trajectory) < 2 or len(self.sampled_trajectory) < 1:
             messagebox.showerror("Missing trajectory", "Trajectory data is missing.")
             return
+        if self.latest_frames_unnormalized is None or self.latest_frames_normalized_u8 is None:
+            messagebox.showerror("Missing frames", "No generated frame data found. Generate a GIF first.")
+            return
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         run_dir = self.base_output_dir / f"accepted_{ts}"
@@ -379,11 +400,26 @@ class TrajectoryCropApp:
             "display_trajectory_coords": self.trajectory,
             "display_sampled_coords": self.sampled_trajectory,
             "timestamp": ts,
+            "saved_files": {
+                "preview_gif": "preview.gif",
+                "frames_unnormalized_npy": "frames_unnormalized.npy",
+                "frames_normalized_uint8_npy": "frames_normalized_uint8.npy",
+                "annotated_image_png": "image_with_trajectory.png",
+                "trajectory_info_json": "trajectory_info.json",
+            },
         }
 
         json_path = run_dir / "trajectory_info.json"
         with json_path.open("w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
+
+        preview_gif_path = run_dir / "preview.gif"
+        num_frames = self.latest_frames_normalized_u8.shape[-1]
+        frames_for_gif = [self.latest_frames_normalized_u8[..., i] for i in range(num_frames)]
+        imageio.mimsave(preview_gif_path, frames_for_gif, duration=1.0 / GIF_FPS, loop=0)
+
+        np.save(run_dir / "frames_unnormalized.npy", self.latest_frames_unnormalized)
+        np.save(run_dir / "frames_normalized_uint8.npy", self.latest_frames_normalized_u8)
 
         if self.current_annotated_image is not None:
             screenshot_path = run_dir / "image_with_trajectory.png"
