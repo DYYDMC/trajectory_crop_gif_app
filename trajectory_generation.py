@@ -126,6 +126,7 @@ def generate_gaze_from_recorded_components(
     px_per_deg=35,
     seed=0,
     trial_index=None,
+    gain=1.0,
 ):
     try:
         import scipy.io as sio
@@ -179,8 +180,8 @@ def generate_gaze_from_recorded_components(
     gaze_pitch_deg = eye_pitch
 
     # Integrate relative to first frame to keep path centered in current panorama.
-    yaw_rel = gaze_yaw_deg - gaze_yaw_deg[0]
-    pitch_rel = gaze_pitch_deg - gaze_pitch_deg[0]
+    yaw_rel = (gaze_yaw_deg - gaze_yaw_deg[0]) * float(gain)
+    pitch_rel = (gaze_pitch_deg - gaze_pitch_deg[0]) * float(gain)
 
     half = crop_size // 2
     cx = pano_w / 2.0

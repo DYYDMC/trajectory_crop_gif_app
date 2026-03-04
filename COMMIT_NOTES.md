@@ -3,6 +3,18 @@
 This file tracks implementation explanations by commit hash for this repo.
 
 ## (next commit)
+**Add amplitude gain control for `Recorded Components` trajectories**
+
+What changed:
+- Added `gain` multiplier to recorded-components generator.
+- Added UI prompt in `Recorded Components` flow to set gain (e.g. `0.1`, `0.2`, `0.5`, `1.0`).
+- Applied gain to relative yaw/pitch movement before degree-to-pixel conversion.
+- Saved selected gain in metadata as `recorded_components_gain`.
+
+Why:
+- Lets raw-data-derived trajectories be scaled down for smaller panoramas to reduce jumpiness while preserving motion pattern shape.
+
+## (next commit)
 **Pre-fit all four Michaiel modes in background and cache once**
 
 What changed:

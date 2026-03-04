@@ -61,6 +61,7 @@ class TrajectoryCropApp:
         self.recorded_trial_index: int | None = None
         self.recorded_trial_index_override: int | None = None
         self.recorded_trial_options: list[tuple[int, str]] | None = None
+        self.recorded_components_gain = 0.2
         self.michaiel_mode = "approach"
         self.michaiel_params_snapshot: dict | None = None
         self.michaiel_params_cache: dict[str, dict] = {}
@@ -303,6 +304,18 @@ class TrajectoryCropApp:
         if selected == "__cancel__":
             return
         self.recorded_trial_index_override = selected
+
+        gain = simpledialog.askfloat(
+            "Recorded components gain",
+            "Scale movement amplitude (e.g. 0.1, 0.2, 0.5, 1.0):",
+            initialvalue=self.recorded_components_gain,
+            minvalue=0.01,
+            maxvalue=2.0,
+            parent=self.root,
+        )
+        if gain is None:
+            return
+        self.recorded_components_gain = float(gain)
         self._select_generated_trajectory_mode("recorded_components", "Recorded Components")
 
     def use_michaiel_fitted_trajectory(self) -> None:
@@ -698,6 +711,9 @@ class TrajectoryCropApp:
             "recorded_trial_index_override": (
                 self.recorded_trial_index_override if self.trajectory_mode == "recorded_components" else None
             ),
+            "recorded_components_gain": (
+                self.recorded_components_gain if self.trajectory_mode == "recorded_components" else None
+            ),
             "michaiel_mode": self.michaiel_mode if self.trajectory_mode == "michaiel_fitted" else None,
             "michaiel_params": self.michaiel_params_snapshot if self.trajectory_mode == "michaiel_fitted" else None,
             "crop_size": self.crop_size,
@@ -851,6 +867,7 @@ class TrajectoryCropApp:
                     px_per_deg=35,
                     seed=self.trajectory_seed,
                     trial_index=self.recorded_trial_index_override,
+                    gain=self.recorded_components_gain,
                 )
                 self.recorded_trial_index = trial_idx
             except Exception as exc:
