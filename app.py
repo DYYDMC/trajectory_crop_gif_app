@@ -64,6 +64,7 @@ class TrajectoryCropApp:
         tk.Button(top, text="Upload Image", command=self.prompt_image_selection).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Redraw Trajectory", command=self.reset_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Approach Trajectory", command=self.use_approach_trajectory).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="Nonapproach Trajectory", command=self.use_nonapproach_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Continue", command=self.continue_with_params).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Save Accept", command=self.accept_result).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Change Something", command=self.change_something).pack(side=tk.LEFT, padx=4)
@@ -265,6 +266,31 @@ class TrajectoryCropApp:
         self.redraw_annotated_image()
         self.status_var.set("Approach trajectory selected. Click Continue to set crop parameters and generate GIF.")
 
+    def use_nonapproach_trajectory(self) -> None:
+        if self.original_image is None:
+            messagebox.showerror("No image", "Please upload an image first.")
+            return
+
+        n_frames = simpledialog.askinteger(
+            "Nonapproach trajectory",
+            "Enter number of frames for nonapproach trajectory:",
+            initialvalue=self.approach_n_frames,
+            minvalue=1,
+            parent=self.root,
+        )
+        if n_frames is None:
+            return
+
+        self.approach_n_frames = int(n_frames)
+        self.trajectory_mode = "nonapproach"
+        self.drawing = False
+        self.current_stroke = []
+        self.trajectory = []
+        self.sampled_trajectory = []
+        self.preview_overlay_enabled = False
+        self.redraw_annotated_image()
+        self.status_var.set("Nonapproach trajectory selected. Click Continue to set crop parameters and generate GIF.")
+
     def continue_with_params(self) -> None:
         if self.original_image is None:
             messagebox.showerror("No image", "Please upload an image first.")
@@ -278,7 +304,7 @@ class TrajectoryCropApp:
             return
 
         self.crop_size = int(crop_size)
-        if self.trajectory_mode == "approach":
+        if self.trajectory_mode in ("approach", "nonapproach"):
             self.sample_frequency = 1
         else:
             sample_freq = simpledialog.askinteger(
@@ -542,6 +568,9 @@ class TrajectoryCropApp:
         if self.trajectory_mode == "approach":
             self._compute_approach_sampled_points()
             return
+        if self.trajectory_mode == "nonapproach":
+            self._compute_nonapproach_sampled_points()
+            return
         if not self.trajectory:
             self.sampled_trajectory = []
             return
@@ -562,6 +591,36 @@ class TrajectoryCropApp:
         center_x = pano_w / 2.0
         center_y = pano_h / 2.0
         sampled_orig = generate_mouse_approach_trajectory(
+            n_frames=self.approach_n_frames,
+            center_x=center_x,
+            center_y=center_y,
+            pano_w=pano_w,
+            pano_h=pano_h,
+            crop_size=self.crop_size,
+            fps=GIF_FPS,
+            px_per_deg=35,
+            seed=self.approach_seed,
+        )
+
+        sampled_disp = []
+        for ox, oy in sampled_orig:
+            dx = int(round(ox * self.scale))
+            dy = int(round(oy * self.scale))
+            sampled_disp.append((dx, dy))
+
+        self.sampled_trajectory = sampled_disp
+        self.trajectory = sampled_disp[:]
+
+    def _compute_nonapproach_sampled_points(self) -> None:
+        if self.original_image is None or self.crop_size is None:
+            self.sampled_trajectory = []
+            self.trajectory = []
+            return
+
+        pano_w, pano_h = self.original_image.size
+        center_x = pano_w / 2.0
+        center_y = pano_h / 2.0
+        sampled_orig = generate_mouse_nonapproach_trajectory(
             n_frames=self.approach_n_frames,
             center_x=center_x,
             center_y=center_y,
@@ -663,6 +722,77 @@ def generate_mouse_approach_trajectory(
         direction = rng.choice([-1, 1])
         h[0] += direction * A
         h[1] += 0.2 * direction * A
+        h[0] = np.clip(h[0], half, pano_w - half - 1)
+        h[1] = np.clip(h[1], half, pano_h - half - 1)
+
+    return sampled_disp
+
+
+def generate_mouse_nonapproach_trajectory(
+    n_frames,
+    center_x,
+    center_y,
+    pano_w,
+    pano_h,
+    crop_size=577,
+    fps=30,
+    px_per_deg=35,
+    seed=0,
+):
+    rng = np.random.default_rng(seed)
+    half = crop_size // 2
+
+    fixation_median_frames = 7
+    fixation_sigma = 0.65
+    alpha = 0.75
+    beta = 0.85
+    emax = 15 * px_per_deg
+    tau = 0.25
+    tau_frames = tau * fps
+    theta = 1.0 / tau_frames
+    sigma_vx = 20
+    sigma_vy = 10
+    jitter_x = 7
+    jitter_y = 5
+
+    h = np.array([center_x, center_y], dtype=float)
+    e = np.array([0.0, 0.0])
+    v = np.array([0.0, 0.0])
+
+    sampled_disp = []
+    frame = 0
+
+    while frame < n_frames:
+        L = int(np.clip(rng.lognormal(np.log(fixation_median_frames), fixation_sigma), 3, 22))
+
+        for _ in range(L):
+            if frame >= n_frames:
+                break
+
+            h_prev = h.copy()
+            noise = np.array([rng.normal(0, sigma_vx), rng.normal(0, sigma_vy)])
+            v = v * (1 - theta) + noise
+            h += v
+
+            dh = h - h_prev
+            e -= alpha * dh
+            e = np.clip(e, -emax, emax)
+
+            g = h + e
+            g[0] += rng.normal(0, jitter_x)
+            g[1] += rng.normal(0, jitter_y)
+            g[0] = np.clip(g[0], half, pano_w - half - 1)
+            g[1] = np.clip(g[1], half, pano_h - half - 1)
+
+            sampled_disp.append((float(g[0]), float(g[1])))
+            frame += 1
+
+        e *= (1 - beta)
+        A = rng.lognormal(np.log(8 * px_per_deg), 0.6)
+        dx = rng.choice([-1, 1]) * A
+        dy = rng.normal(0, 0.5 * A)
+        h[0] += dx
+        h[1] += dy
         h[0] = np.clip(h[0], half, pano_w - half - 1)
         h[1] = np.clip(h[1], half, pano_h - half - 1)
 
