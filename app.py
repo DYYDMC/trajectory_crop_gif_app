@@ -10,13 +10,21 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 from gif_pipeline import build_crop_frames, save_gif_from_frames, to_rgb_native
 from trajectory_generation import generate_gaze, generate_gaze_from_recorded_components
+from trajectory_generation_Michaiel import fit_michaiel_params_from_mat, generate_gaze_michaiel, params_to_dict
 
 
 ALLOWED_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 CANVAS_MAX_W = 900
 CANVAS_MAX_H = 700
 GIF_FPS = 30
-GENERATED_TRAJECTORY_MODES = {"approach", "nonapproach", "stationary", "running", "recorded_components"}
+GENERATED_TRAJECTORY_MODES = {
+    "approach",
+    "nonapproach",
+    "stationary",
+    "running",
+    "recorded_components",
+    "michaiel_fitted",
+}
 
 
 class TrajectoryCropApp:
@@ -51,6 +59,8 @@ class TrajectoryCropApp:
         self.recorded_trial_index: int | None = None
         self.recorded_trial_index_override: int | None = None
         self.recorded_trial_options: list[tuple[int, str]] | None = None
+        self.michaiel_mode = "approach"
+        self.michaiel_params_snapshot: dict | None = None
 
         self.crop_size: int | None = None
         self.sample_frequency: int | None = None
@@ -74,6 +84,7 @@ class TrajectoryCropApp:
         tk.Button(top, text="Stationary Trajectory", command=self.use_stationary_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Running Trajectory", command=self.use_running_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Recorded Components", command=self.use_recorded_components_trajectory).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="Michaiel Fitted", command=self.use_michaiel_fitted_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Continue", command=self.continue_with_params).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Save Accept", command=self.accept_result).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Change Something", command=self.change_something).pack(side=tk.LEFT, padx=4)
@@ -278,6 +289,44 @@ class TrajectoryCropApp:
             return
         self.recorded_trial_index_override = selected
         self._select_generated_trajectory_mode("recorded_components", "Recorded Components")
+
+    def use_michaiel_fitted_trajectory(self) -> None:
+        mode = self._prompt_michaiel_mode_dropdown()
+        if mode is None:
+            return
+        self.michaiel_mode = mode
+        self._select_generated_trajectory_mode("michaiel_fitted", f"Michaiel Fitted ({mode})")
+
+    def _prompt_michaiel_mode_dropdown(self) -> str | None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Michaiel fitted mode")
+        dialog.geometry("420x140")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Choose behavior mode to fit from dataset:").pack(anchor="w", padx=10, pady=(10, 4))
+        options = ["approach", "nonapproach", "running", "stationary"]
+        combo = ttk.Combobox(dialog, values=options, state="readonly", width=30)
+        combo.pack(fill=tk.X, padx=10)
+        combo.current(options.index(self.michaiel_mode) if self.michaiel_mode in options else 0)
+
+        result: dict[str, str | None] = {"value": None}
+
+        def choose() -> None:
+            result["value"] = options[combo.current()]
+            dialog.destroy()
+
+        def cancel() -> None:
+            result["value"] = None
+            dialog.destroy()
+
+        btns = tk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=10, pady=10)
+        tk.Button(btns, text="Cancel", command=cancel, width=12).pack(side=tk.RIGHT, padx=4)
+        tk.Button(btns, text="Continue", command=choose, width=12).pack(side=tk.RIGHT, padx=4)
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        self.root.wait_window(dialog)
+        return result["value"]
 
     def _prompt_recorded_trial_dropdown(self) -> int | None | str:
         options = self._get_recorded_trial_options()
@@ -515,6 +564,8 @@ class TrajectoryCropApp:
             "recorded_trial_index_override": (
                 self.recorded_trial_index_override if self.trajectory_mode == "recorded_components" else None
             ),
+            "michaiel_mode": self.michaiel_mode if self.trajectory_mode == "michaiel_fitted" else None,
+            "michaiel_params": self.michaiel_params_snapshot if self.trajectory_mode == "michaiel_fitted" else None,
             "crop_size": self.crop_size,
             "sample_frequency": self.sample_frequency,
             "display_scale": self.scale,
@@ -670,6 +721,35 @@ class TrajectoryCropApp:
                 self.recorded_trial_index = trial_idx
             except Exception as exc:
                 messagebox.showerror("Recorded trajectory failed", str(exc))
+                self.sampled_trajectory = []
+                self.trajectory = []
+                return
+        elif self.trajectory_mode == "michaiel_fitted":
+            mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
+            if not mat_path.exists():
+                messagebox.showerror("Missing .mat", f"Expected dataset not found:\n{mat_path}")
+                self.sampled_trajectory = []
+                self.trajectory = []
+                return
+            try:
+                params = fit_michaiel_params_from_mat(
+                    mat_path=mat_path,
+                    mode=self.michaiel_mode,
+                    fps_data=60,
+                    fps_generate=GIF_FPS,
+                )
+                self.michaiel_params_snapshot = params_to_dict(params)
+                sampled_orig = generate_gaze_michaiel(
+                    n_frames=self.generated_n_frames,
+                    params=params,
+                    pano_w=pano_w,
+                    pano_h=pano_h,
+                    crop_size=self.crop_size,
+                    px_per_deg=35,
+                    seed=self.trajectory_seed,
+                )
+            except Exception as exc:
+                messagebox.showerror("Michaiel fitted failed", str(exc))
                 self.sampled_trajectory = []
                 self.trajectory = []
                 return

@@ -3,6 +3,22 @@
 This file tracks implementation explanations by commit hash for this repo.
 
 ## (next commit)
+**Wire `trajectory_generation_Michaiel.py` into app UI as `Michaiel Fitted` mode**
+
+What changed:
+- Added new button: `Michaiel Fitted`.
+- Added mode selector dropdown (`approach`, `nonapproach`, `running`, `stationary`) before generation.
+- Integrated fitted pipeline in app generation flow:
+1. fit parameters from `.mat` via `fit_michaiel_params_from_mat(...)`
+2. generate trajectory via `generate_gaze_michaiel(...)`
+- Added metadata fields for this mode:
+1. `michaiel_mode`
+2. `michaiel_params` (fitted parameter snapshot)
+
+Why:
+- Enables direct in-app testing of data-fitted trajectory generation without replacing existing generators.
+
+## (next commit)
 **Add layman guide for fitted Michaiel generator usage (`HOW2MICHAIEL.md`)**
 
 What changed:
