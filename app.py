@@ -5,9 +5,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 
-import imageio.v2 as imageio
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
+from gif_pipeline import build_crop_frames, save_gif_from_frames, to_rgb_native
 from trajectory_generation import generate_gaze
 
 
@@ -319,69 +319,31 @@ class TrajectoryCropApp:
         assert self.sample_frequency is not None
 
         src = self.original_array_native
-        if src.ndim == 2:
-            src_native = np.stack([src, src, src], axis=2)
-        elif src.ndim == 3 and src.shape[2] >= 3:
-            src_native = src[..., :3]
-        elif src.ndim == 3 and src.shape[2] == 2:
-            # Convert two-channel (e.g., LA) inputs to RGB-like tensor.
-            src_native = np.stack([src[..., 0], src[..., 0], src[..., 0]], axis=2)
-        else:
-            messagebox.showerror("Unsupported image", f"Unsupported image array shape: {src.shape}")
-            return
-
-        src_h, src_w, _ = src_native.shape
-        half = self.crop_size // 2
 
         self.compute_sampled_points()
         sampled_disp = self.sampled_trajectory
 
-        frames_native = []
-        frames_uint8 = []
-        for (dx, dy) in sampled_disp:
-            ox = int(round(dx / self.scale))
-            oy = int(round(dy / self.scale))
-
-            x0 = ox - half
-            y0 = oy - half
-            x1 = x0 + self.crop_size
-            y1 = y0 + self.crop_size
-
-            crop_native = np.zeros((self.crop_size, self.crop_size, 3), dtype=src_native.dtype)
-
-            sx0 = max(0, x0)
-            sy0 = max(0, y0)
-            sx1 = min(src_w, x1)
-            sy1 = min(src_h, y1)
-
-            if sx1 > sx0 and sy1 > sy0:
-                tx0 = sx0 - x0
-                ty0 = sy0 - y0
-                tx1 = tx0 + (sx1 - sx0)
-                ty1 = ty0 + (sy1 - sy0)
-                crop_native[ty0:ty1, tx0:tx1, :] = src_native[sy0:sy1, sx0:sx1, :]
-
-            maxv = float(crop_native.max())
-            if maxv > 0:
-                crop_norm = crop_native.astype(np.float32) / maxv
-            else:
-                crop_norm = crop_native.astype(np.float32)
-            crop_u8 = np.clip(crop_norm * 255.0, 0, 255).astype(np.uint8)
-            frames_native.append(crop_native)
-            frames_uint8.append(crop_u8)
-
-        if not frames_uint8:
-            messagebox.showerror("No frames", "No frames could be generated from the sampled trajectory.")
+        try:
+            src_native = to_rgb_native(src)
+            frames_native, frames_uint8 = build_crop_frames(
+                src_native=src_native,
+                sampled_disp=sampled_disp,
+                scale=self.scale,
+                crop_size=self.crop_size,
+            )
+        except ValueError as exc:
+            title = "Unsupported image" if "Unsupported image array shape" in str(exc) else "No frames"
+            messagebox.showerror(title, str(exc))
             return
 
-        self.latest_frames_unnormalized = np.stack(frames_native, axis=-1)
-        self.latest_frames_normalized_u8 = np.stack(frames_uint8, axis=-1)
+        self.latest_frames_unnormalized = frames_native
+        self.latest_frames_normalized_u8 = frames_uint8
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         run_dir = self.base_output_dir / f"run_{ts}"
         run_dir.mkdir(parents=True, exist_ok=True)
         gif_path = run_dir / "preview.gif"
-        imageio.mimsave(gif_path, frames_uint8, duration=1.0 / GIF_FPS, loop=0)
+        save_gif_from_frames(frames_uint8, gif_path, GIF_FPS)
 
         self.load_and_play_gif(gif_path)
         self.status_var.set("GIF generated. Review and choose Accept or Change Something.")
@@ -466,9 +428,7 @@ class TrajectoryCropApp:
             json.dump(metadata, f, indent=2)
 
         preview_gif_path = run_dir / "preview.gif"
-        num_frames = self.latest_frames_normalized_u8.shape[-1]
-        frames_for_gif = [self.latest_frames_normalized_u8[..., i] for i in range(num_frames)]
-        imageio.mimsave(preview_gif_path, frames_for_gif, duration=1.0 / GIF_FPS, loop=0)
+        save_gif_from_frames(self.latest_frames_normalized_u8, preview_gif_path, GIF_FPS)
 
         np.save(run_dir / "frames_unnormalized.npy", self.latest_frames_unnormalized)
         np.save(run_dir / "frames_normalized_uint8.npy", self.latest_frames_normalized_u8)
