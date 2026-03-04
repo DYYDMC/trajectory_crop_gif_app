@@ -3,6 +3,21 @@
 This file tracks implementation explanations by commit hash for this repo.
 
 ## (next commit)
+**Cache Michaiel fitted parameters to avoid repeated .mat refits**
+
+What changed:
+- Added in-memory cache for fitted Michaiel parameters keyed by mode/fps.
+- Added persistent cache file:
+1. `Michaiel_gaze_2020/derived/michaiel_fitted_params.json`
+- Added lazy fit behavior:
+1. first use of mode fits from `.mat`
+2. subsequent uses load from cache (no refit)
+- `Michaiel Fitted` generation now calls cache-backed parameter loader.
+
+Why:
+- Prevents repeated heavy `.mat` loading/fitting and reduces UI hangs/crash risk.
+
+## (next commit)
 **Wire `trajectory_generation_Michaiel.py` into app UI as `Michaiel Fitted` mode**
 
 What changed:

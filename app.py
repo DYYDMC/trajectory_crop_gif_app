@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 from gif_pipeline import build_crop_frames, save_gif_from_frames, to_rgb_native
 from trajectory_generation import generate_gaze, generate_gaze_from_recorded_components
-from trajectory_generation_Michaiel import fit_michaiel_params_from_mat, generate_gaze_michaiel, params_to_dict
+from trajectory_generation_Michaiel import MichaielParams, fit_michaiel_params_from_mat, generate_gaze_michaiel, params_to_dict
 
 
 ALLOWED_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
@@ -61,6 +61,9 @@ class TrajectoryCropApp:
         self.recorded_trial_options: list[tuple[int, str]] | None = None
         self.michaiel_mode = "approach"
         self.michaiel_params_snapshot: dict | None = None
+        self.michaiel_params_cache: dict[str, dict] = {}
+        self.michaiel_cache_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "derived" / "michaiel_fitted_params.json"
+        self._load_michaiel_params_cache()
 
         self.crop_size: int | None = None
         self.sample_frequency: int | None = None
@@ -409,6 +412,54 @@ class TrajectoryCropApp:
         self.recorded_trial_options = out
         return out
 
+    def _load_michaiel_params_cache(self) -> None:
+        if not self.michaiel_cache_path.exists():
+            self.michaiel_params_cache = {}
+            return
+        try:
+            with self.michaiel_cache_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self.michaiel_params_cache = data
+            else:
+                self.michaiel_params_cache = {}
+        except Exception:
+            self.michaiel_params_cache = {}
+
+    def _save_michaiel_params_cache(self) -> None:
+        try:
+            self.michaiel_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.michaiel_cache_path.open("w", encoding="utf-8") as f:
+                json.dump(self.michaiel_params_cache, f, indent=2)
+        except Exception:
+            # Non-fatal: generation still works with in-memory cache.
+            pass
+
+    def _get_michaiel_params(self, mode: str) -> MichaielParams:
+        key = f"{mode}|fps{GIF_FPS}"
+        cached = self.michaiel_params_cache.get(key)
+        if isinstance(cached, dict):
+            try:
+                return MichaielParams(**cached)
+            except Exception:
+                pass
+
+        mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
+        if not mat_path.exists():
+            raise RuntimeError(f"Expected dataset not found: {mat_path}")
+
+        self.status_var.set(f"Fitting Michaiel parameters for {mode} (first time only)...")
+        self.root.update_idletasks()
+        params = fit_michaiel_params_from_mat(
+            mat_path=mat_path,
+            mode=mode,
+            fps_data=60,
+            fps_generate=GIF_FPS,
+        )
+        self.michaiel_params_cache[key] = params_to_dict(params)
+        self._save_michaiel_params_cache()
+        return params
+
     def _select_generated_trajectory_mode(self, mode: str, label: str) -> None:
         if self.original_image is None:
             messagebox.showerror("No image", "Please upload an image first.")
@@ -725,19 +776,8 @@ class TrajectoryCropApp:
                 self.trajectory = []
                 return
         elif self.trajectory_mode == "michaiel_fitted":
-            mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
-            if not mat_path.exists():
-                messagebox.showerror("Missing .mat", f"Expected dataset not found:\n{mat_path}")
-                self.sampled_trajectory = []
-                self.trajectory = []
-                return
             try:
-                params = fit_michaiel_params_from_mat(
-                    mat_path=mat_path,
-                    mode=self.michaiel_mode,
-                    fps_data=60,
-                    fps_generate=GIF_FPS,
-                )
+                params = self._get_michaiel_params(self.michaiel_mode)
                 self.michaiel_params_snapshot = params_to_dict(params)
                 sampled_orig = generate_gaze_michaiel(
                     n_frames=self.generated_n_frames,
