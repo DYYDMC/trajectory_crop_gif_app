@@ -8,14 +8,14 @@ from tkinter import filedialog, messagebox, simpledialog
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 from gif_pipeline import build_crop_frames, save_gif_from_frames, to_rgb_native
-from trajectory_generation import generate_gaze
+from trajectory_generation import generate_gaze, generate_gaze_from_recorded_components
 
 
 ALLOWED_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 CANVAS_MAX_W = 900
 CANVAS_MAX_H = 700
 GIF_FPS = 30
-GENERATED_TRAJECTORY_MODES = {"approach", "nonapproach", "stationary", "running"}
+GENERATED_TRAJECTORY_MODES = {"approach", "nonapproach", "stationary", "running", "recorded_components"}
 
 
 class TrajectoryCropApp:
@@ -47,6 +47,7 @@ class TrajectoryCropApp:
         self.trajectory_mode = "manual"
         self.generated_n_frames = 180
         self.trajectory_seed = 0
+        self.recorded_trial_index: int | None = None
 
         self.crop_size: int | None = None
         self.sample_frequency: int | None = None
@@ -69,6 +70,7 @@ class TrajectoryCropApp:
         tk.Button(top, text="Nonapproach Trajectory", command=self.use_nonapproach_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Stationary Trajectory", command=self.use_stationary_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Running Trajectory", command=self.use_running_trajectory).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="Recorded Components", command=self.use_recorded_components_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Continue", command=self.continue_with_params).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Save Accept", command=self.accept_result).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Change Something", command=self.change_something).pack(side=tk.LEFT, padx=4)
@@ -257,6 +259,9 @@ class TrajectoryCropApp:
     def use_running_trajectory(self) -> None:
         self._select_generated_trajectory_mode("running", "Running")
 
+    def use_recorded_components_trajectory(self) -> None:
+        self._select_generated_trajectory_mode("recorded_components", "Recorded Components")
+
     def _select_generated_trajectory_mode(self, mode: str, label: str) -> None:
         if self.original_image is None:
             messagebox.showerror("No image", "Please upload an image first.")
@@ -274,6 +279,7 @@ class TrajectoryCropApp:
 
         self.generated_n_frames = int(n_frames)
         self.trajectory_mode = mode
+        self.recorded_trial_index = None
         self.drawing = False
         self.current_stroke = []
         self.trajectory = []
@@ -407,6 +413,7 @@ class TrajectoryCropApp:
             "image_path": str(self.image_path),
             "trajectory_mode": self.trajectory_mode,
             "trajectory_seed": self.trajectory_seed if self.trajectory_mode in GENERATED_TRAJECTORY_MODES else None,
+            "recorded_trial_index": self.recorded_trial_index if self.trajectory_mode == "recorded_components" else None,
             "crop_size": self.crop_size,
             "sample_frequency": self.sample_frequency,
             "display_scale": self.scale,
@@ -541,16 +548,40 @@ class TrajectoryCropApp:
             return
 
         pano_w, pano_h = self.original_image.size
-        sampled_orig = generate_gaze(
-            n_frames=self.generated_n_frames,
-            mode=self.trajectory_mode,
-            pano_w=pano_w,
-            pano_h=pano_h,
-            crop_size=self.crop_size,
-            fps=GIF_FPS,
-            px_per_deg=35,
-            seed=self.trajectory_seed,
-        )
+        if self.trajectory_mode == "recorded_components":
+            mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
+            if not mat_path.exists():
+                messagebox.showerror("Missing .mat", f"Expected dataset not found:\n{mat_path}")
+                self.sampled_trajectory = []
+                self.trajectory = []
+                return
+            try:
+                sampled_orig, trial_idx = generate_gaze_from_recorded_components(
+                    n_frames=self.generated_n_frames,
+                    mat_path=mat_path,
+                    pano_w=pano_w,
+                    pano_h=pano_h,
+                    crop_size=self.crop_size,
+                    px_per_deg=35,
+                    seed=self.trajectory_seed,
+                )
+                self.recorded_trial_index = trial_idx
+            except Exception as exc:
+                messagebox.showerror("Recorded trajectory failed", str(exc))
+                self.sampled_trajectory = []
+                self.trajectory = []
+                return
+        else:
+            sampled_orig = generate_gaze(
+                n_frames=self.generated_n_frames,
+                mode=self.trajectory_mode,
+                pano_w=pano_w,
+                pano_h=pano_h,
+                crop_size=self.crop_size,
+                fps=GIF_FPS,
+                px_per_deg=35,
+                seed=self.trajectory_seed,
+            )
 
         sampled_disp = []
         for ox, oy in sampled_orig:
