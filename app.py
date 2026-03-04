@@ -426,6 +426,7 @@ class TrajectoryCropApp:
         metadata = {
             "image_path": str(self.image_path),
             "trajectory_mode": self.trajectory_mode,
+            "approach_seed": self.approach_seed if self.trajectory_mode == "approach" else None,
             "crop_size": self.crop_size,
             "sample_frequency": self.sample_frequency,
             "display_scale": self.scale,
