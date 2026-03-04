@@ -420,6 +420,7 @@ class TrajectoryCropApp:
                 "frames_unnormalized_npy": "frames_unnormalized.npy",
                 "frames_normalized_uint8_npy": "frames_normalized_uint8.npy",
                 "annotated_image_png": "image_with_trajectory.png",
+                "trajectory_points_image_png": "image_with_trajectory_points.png",
                 "trajectory_info_json": "trajectory_info.json",
             },
         }
@@ -437,6 +438,9 @@ class TrajectoryCropApp:
         if self.current_annotated_image is not None:
             screenshot_path = run_dir / "image_with_trajectory.png"
             self.current_annotated_image.save(screenshot_path)
+        if self.base_display_image is not None:
+            points_only_path = run_dir / "image_with_trajectory_points.png"
+            self._make_trajectory_points_image().save(points_only_path)
 
         messagebox.showinfo("Saved", f"Saved JSON and screenshot to:\n{run_dir}")
         self.status_var.set(f"Accepted and saved to {run_dir}")
@@ -572,6 +576,21 @@ class TrajectoryCropApp:
             draw.rectangle([x0, y0, x1, y1], outline=color, width=1)
             r = 2
             draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
+
+    def _make_trajectory_points_image(self) -> Image.Image:
+        assert self.base_display_image is not None
+        img = self.base_display_image.copy()
+        draw = ImageDraw.Draw(img)
+
+        if len(self.trajectory) >= 2:
+            draw.line(self.trajectory, fill=(255, 0, 0), width=2)
+
+        for i, (x, y) in enumerate(self.sampled_trajectory):
+            color = (255, 255, 0) if i == 0 else (255, 165, 0)
+            r = 3
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
+
+        return img
 
 
 def main() -> None:
