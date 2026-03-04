@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import queue
+import threading
 import time
 from pathlib import Path
 import tkinter as tk
@@ -64,6 +66,7 @@ class TrajectoryCropApp:
         self.michaiel_params_cache: dict[str, dict] = {}
         self.michaiel_cache_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "derived" / "michaiel_fitted_params.json"
         self._load_michaiel_params_cache()
+        self._michaiel_prefit_in_progress = False
 
         self.crop_size: int | None = None
         self.sample_frequency: int | None = None
@@ -294,6 +297,8 @@ class TrajectoryCropApp:
         self._select_generated_trajectory_mode("recorded_components", "Recorded Components")
 
     def use_michaiel_fitted_trajectory(self) -> None:
+        if not self._ensure_michaiel_params_prefit_all():
+            return
         mode = self._prompt_michaiel_mode_dropdown()
         if mode is None:
             return
@@ -444,21 +449,90 @@ class TrajectoryCropApp:
             except Exception:
                 pass
 
+        params = self._fit_michaiel_params_mode(mode)
+        self.michaiel_params_cache[key] = params_to_dict(params)
+        self._save_michaiel_params_cache()
+        return params
+
+    def _fit_michaiel_params_mode(self, mode: str) -> MichaielParams:
         mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
         if not mat_path.exists():
             raise RuntimeError(f"Expected dataset not found: {mat_path}")
-
-        self.status_var.set(f"Fitting Michaiel parameters for {mode} (first time only)...")
-        self.root.update_idletasks()
-        params = fit_michaiel_params_from_mat(
+        return fit_michaiel_params_from_mat(
             mat_path=mat_path,
             mode=mode,
             fps_data=60,
             fps_generate=GIF_FPS,
         )
-        self.michaiel_params_cache[key] = params_to_dict(params)
-        self._save_michaiel_params_cache()
-        return params
+
+    def _ensure_michaiel_params_prefit_all(self) -> bool:
+        if self._michaiel_prefit_in_progress:
+            return False
+
+        modes = ["approach", "nonapproach", "running", "stationary"]
+        missing = [m for m in modes if f"{m}|fps{GIF_FPS}" not in self.michaiel_params_cache]
+        if not missing:
+            return True
+
+        self._michaiel_prefit_in_progress = True
+        progress_q: queue.Queue = queue.Queue()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Preparing Michaiel Fitted")
+        dialog.geometry("520x130")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        msg_var = tk.StringVar(value="Pre-fitting Michaiel parameters (one-time setup)...")
+        tk.Label(dialog, textvariable=msg_var, anchor="w").pack(fill=tk.X, padx=10, pady=(12, 4))
+        detail_var = tk.StringVar(value=f"Pending: {', '.join(missing)}")
+        tk.Label(dialog, textvariable=detail_var, anchor="w").pack(fill=tk.X, padx=10, pady=(0, 8))
+
+        state = {"done": False, "ok": False, "error": ""}
+
+        def worker() -> None:
+            try:
+                for mode in missing:
+                    progress_q.put(("progress", mode))
+                    params = self._fit_michaiel_params_mode(mode)
+                    self.michaiel_params_cache[f"{mode}|fps{GIF_FPS}"] = params_to_dict(params)
+                self._save_michaiel_params_cache()
+                progress_q.put(("done", None))
+            except Exception as exc:
+                progress_q.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll_queue() -> None:
+            try:
+                while True:
+                    kind, payload = progress_q.get_nowait()
+                    if kind == "progress":
+                        detail_var.set(f"Fitting: {payload} ...")
+                    elif kind == "done":
+                        state["done"] = True
+                        state["ok"] = True
+                        dialog.destroy()
+                        return
+                    elif kind == "error":
+                        state["done"] = True
+                        state["ok"] = False
+                        state["error"] = str(payload)
+                        dialog.destroy()
+                        return
+            except queue.Empty:
+                pass
+            if not state["done"]:
+                dialog.after(100, poll_queue)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        poll_queue()
+        self.root.wait_window(dialog)
+        self._michaiel_prefit_in_progress = False
+        if not state["ok"]:
+            messagebox.showerror("Michaiel pre-fit failed", state["error"] or "Unknown error during parameter fitting.")
+            return False
+        self.status_var.set("Michaiel fitted parameters cached for all modes.")
+        return True
 
     def _select_generated_trajectory_mode(self, mode: str, label: str) -> None:
         if self.original_image is None:

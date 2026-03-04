@@ -3,6 +3,23 @@
 This file tracks implementation explanations by commit hash for this repo.
 
 ## (next commit)
+**Pre-fit all four Michaiel modes in background and cache once**
+
+What changed:
+- `Michaiel Fitted` now performs one-time pre-fit for all behavior modes:
+1. `approach`
+2. `nonapproach`
+3. `running`
+4. `stationary`
+- Pre-fit runs in a background thread with a modal progress dialog (UI stays responsive).
+- Cached parameters are reused afterward (no repeated `.mat` refit when switching behavior).
+- Cache remains persisted in:
+1. `Michaiel_gaze_2020/derived/michaiel_fitted_params.json`
+
+Why:
+- Avoids repeated heavy fitting calls that caused freezes/not-responding crashes during mode switching.
+
+## (next commit)
 **Cache Michaiel fitted parameters to avoid repeated .mat refits**
 
 What changed:
