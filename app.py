@@ -42,6 +42,9 @@ class TrajectoryCropApp:
         self.trajectory: list[tuple[int, int]] = []
         self.sampled_trajectory: list[tuple[int, int]] = []
         self.preview_overlay_enabled = False
+        self.trajectory_mode = "manual"
+        self.approach_n_frames = 180
+        self.approach_seed = 0
 
         self.crop_size: int | None = None
         self.sample_frequency: int | None = None
@@ -60,6 +63,7 @@ class TrajectoryCropApp:
 
         tk.Button(top, text="Upload Image", command=self.prompt_image_selection).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Redraw Trajectory", command=self.reset_trajectory).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="Approach Trajectory", command=self.use_approach_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Continue", command=self.continue_with_params).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Save Accept", command=self.accept_result).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Change Something", command=self.change_something).pack(side=tk.LEFT, padx=4)
@@ -191,6 +195,7 @@ class TrajectoryCropApp:
         if not self._point_inside_image(event.x, event.y):
             return
 
+        self.trajectory_mode = "manual"
         self.drawing = True
         self.current_stroke = [(event.x - self.offset_x, event.y - self.offset_y)]
         self.status_var.set("Drawing trajectory...")
@@ -227,6 +232,7 @@ class TrajectoryCropApp:
             self.status_var.set("Trajectory cleared. Draw again.")
 
     def reset_trajectory(self) -> None:
+        self.trajectory_mode = "manual"
         self.drawing = False
         self.current_stroke = []
         self.trajectory = []
@@ -234,11 +240,36 @@ class TrajectoryCropApp:
         self.preview_overlay_enabled = False
         self.redraw_annotated_image()
 
+    def use_approach_trajectory(self) -> None:
+        if self.original_image is None:
+            messagebox.showerror("No image", "Please upload an image first.")
+            return
+
+        n_frames = simpledialog.askinteger(
+            "Approach trajectory",
+            "Enter number of frames for approach trajectory:",
+            initialvalue=self.approach_n_frames,
+            minvalue=1,
+            parent=self.root,
+        )
+        if n_frames is None:
+            return
+
+        self.approach_n_frames = int(n_frames)
+        self.trajectory_mode = "approach"
+        self.drawing = False
+        self.current_stroke = []
+        self.trajectory = []
+        self.sampled_trajectory = []
+        self.preview_overlay_enabled = False
+        self.redraw_annotated_image()
+        self.status_var.set("Approach trajectory selected. Click Continue to set crop parameters and generate GIF.")
+
     def continue_with_params(self) -> None:
         if self.original_image is None:
             messagebox.showerror("No image", "Please upload an image first.")
             return
-        if len(self.trajectory) < 2:
+        if self.trajectory_mode == "manual" and len(self.trajectory) < 2:
             messagebox.showerror("No trajectory", "Please draw a trajectory first.")
             return
 
@@ -246,17 +277,19 @@ class TrajectoryCropApp:
         if crop_size is None:
             return
 
-        sample_freq = simpledialog.askinteger(
-            "Sample frequency",
-            "Enter sampling frequency along the trajectory (every N points):",
-            minvalue=1,
-            parent=self.root,
-        )
-        if sample_freq is None:
-            return
-
         self.crop_size = int(crop_size)
-        self.sample_frequency = int(sample_freq)
+        if self.trajectory_mode == "approach":
+            self.sample_frequency = 1
+        else:
+            sample_freq = simpledialog.askinteger(
+                "Sample frequency",
+                "Enter sampling frequency along the trajectory (every N points):",
+                minvalue=1,
+                parent=self.root,
+            )
+            if sample_freq is None:
+                return
+            self.sample_frequency = int(sample_freq)
         self.compute_sampled_points()
         self.preview_overlay_enabled = True
         self.redraw_annotated_image()
@@ -392,6 +425,7 @@ class TrajectoryCropApp:
 
         metadata = {
             "image_path": str(self.image_path),
+            "trajectory_mode": self.trajectory_mode,
             "crop_size": self.crop_size,
             "sample_frequency": self.sample_frequency,
             "display_scale": self.scale,
@@ -504,6 +538,9 @@ class TrajectoryCropApp:
         return converted
 
     def compute_sampled_points(self) -> None:
+        if self.trajectory_mode == "approach":
+            self._compute_approach_sampled_points()
+            return
         if not self.trajectory:
             self.sampled_trajectory = []
             return
@@ -513,6 +550,36 @@ class TrajectoryCropApp:
         if not sampled_disp:
             sampled_disp = [self.trajectory[0]]
         self.sampled_trajectory = sampled_disp
+
+    def _compute_approach_sampled_points(self) -> None:
+        if self.original_image is None or self.crop_size is None:
+            self.sampled_trajectory = []
+            self.trajectory = []
+            return
+
+        pano_w, pano_h = self.original_image.size
+        center_x = pano_w / 2.0
+        center_y = pano_h / 2.0
+        sampled_orig = generate_mouse_approach_trajectory(
+            n_frames=self.approach_n_frames,
+            center_x=center_x,
+            center_y=center_y,
+            pano_w=pano_w,
+            pano_h=pano_h,
+            crop_size=self.crop_size,
+            fps=GIF_FPS,
+            px_per_deg=35,
+            seed=self.approach_seed,
+        )
+
+        sampled_disp = []
+        for ox, oy in sampled_orig:
+            dx = int(round(ox * self.scale))
+            dy = int(round(oy * self.scale))
+            sampled_disp.append((dx, dy))
+
+        self.sampled_trajectory = sampled_disp
+        self.trajectory = sampled_disp[:]
 
     def _draw_sampling_preview(self, draw: ImageDraw.ImageDraw) -> None:
         assert self.crop_size is not None
@@ -529,6 +596,76 @@ class TrajectoryCropApp:
             draw.rectangle([x0, y0, x1, y1], outline=color, width=1)
             r = 2
             draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
+
+
+def generate_mouse_approach_trajectory(
+    n_frames,
+    center_x,
+    center_y,
+    pano_w,
+    pano_h,
+    crop_size=577,
+    fps=30,
+    px_per_deg=35,
+    seed=0,
+):
+    rng = np.random.default_rng(seed)
+    half = crop_size // 2
+
+    fixation_median_frames = 7
+    fixation_sigma = 0.55
+    alpha = 0.85
+    beta = 0.95
+    emax = 12 * px_per_deg
+    tau = 0.25
+    tau_frames = tau * fps
+    theta = 1.0 / tau_frames
+    sigma_vx = 18
+    sigma_vy = 4
+    jitter_x = 4
+    jitter_y = 1.5
+    y0 = center_y
+
+    h = np.array([center_x, center_y], dtype=float)
+    e = np.array([0.0, 0.0])
+    v = np.array([0.0, 0.0])
+    sampled_disp = []
+
+    frame = 0
+    while frame < n_frames:
+        L = int(np.clip(rng.lognormal(np.log(fixation_median_frames), fixation_sigma), 3, 18))
+
+        for _ in range(L):
+            if frame >= n_frames:
+                break
+
+            h_prev = h.copy()
+            noise = np.array([rng.normal(0, sigma_vx), rng.normal(0, sigma_vy)])
+            v = v * (1 - theta) + noise
+            h += v
+            h[1] += -0.02 * (h[1] - y0)
+
+            dh = h - h_prev
+            e -= alpha * dh
+            e = np.clip(e, -emax, emax)
+
+            g = h + e
+            g[0] += rng.normal(0, jitter_x)
+            g[1] += rng.normal(0, jitter_y)
+            g[0] = np.clip(g[0], half, pano_w - half - 1)
+            g[1] = np.clip(g[1], half, pano_h - half - 1)
+            sampled_disp.append((float(g[0]), float(g[1])))
+            frame += 1
+
+        e *= (1 - beta)
+        A = rng.lognormal(np.log(6 * px_per_deg), 0.4)
+        direction = rng.choice([-1, 1])
+        h[0] += direction * A
+        h[1] += 0.2 * direction * A
+        h[0] = np.clip(h[0], half, pano_w - half - 1)
+        h[1] = np.clip(h[1], half, pano_h - half - 1)
+
+    return sampled_disp
 
 
 def main() -> None:
