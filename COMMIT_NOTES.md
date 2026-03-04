@@ -2,6 +2,19 @@
 
 This file tracks implementation explanations by commit hash for this repo.
 
+## (next commit)
+**Replace recorded trial inputbox with annotated dropdown selector**
+
+What changed:
+- Replaced numeric inputbox for recorded trial selection with a modal dropdown.
+- Dropdown options now show trial-level approach context from `approachEpochs`, e.g.:
+1. `trial 087 | mixed | approach 23.4%`
+2. `trial 012 | non-approach | approach 0.0%`
+- Kept `Auto-select by seed` as the first option.
+
+Why:
+- Easier and safer trial selection with direct behavioral context visible in UI.
+
 ## 9a9da66
 **Prompt seed and optional trial index for recorded-components mode**
 
@@ -140,4 +153,3 @@ What changed:
 
 Why:
 - Replaced hand-drawn dependency with reproducible deterministic trajectory generation.
-

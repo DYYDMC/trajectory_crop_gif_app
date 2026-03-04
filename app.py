@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
+from tkinter import ttk
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
@@ -49,6 +50,7 @@ class TrajectoryCropApp:
         self.trajectory_seed = 0
         self.recorded_trial_index: int | None = None
         self.recorded_trial_index_override: int | None = None
+        self.recorded_trial_options: list[tuple[int, str]] | None = None
 
         self.crop_size: int | None = None
         self.sample_frequency: int | None = None
@@ -271,16 +273,92 @@ class TrajectoryCropApp:
             return
         self.trajectory_seed = int(seed)
 
-        trial_idx = simpledialog.askinteger(
-            "Recorded components trial index",
-            "Optional fixed trial index (0-104). Cancel = auto-select by seed:",
-            initialvalue=self.recorded_trial_index_override if self.recorded_trial_index_override is not None else 0,
-            minvalue=0,
-            maxvalue=104,
-            parent=self.root,
-        )
-        self.recorded_trial_index_override = int(trial_idx) if trial_idx is not None else None
+        selected = self._prompt_recorded_trial_dropdown()
+        if selected == "__cancel__":
+            return
+        self.recorded_trial_index_override = selected
         self._select_generated_trajectory_mode("recorded_components", "Recorded Components")
+
+    def _prompt_recorded_trial_dropdown(self) -> int | None | str:
+        options = self._get_recorded_trial_options()
+        if not options:
+            messagebox.showerror("Missing dataset", "Could not load trial labels from approachEpochs.")
+            return "__cancel__"
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Recorded components trial")
+        dialog.geometry("540x160")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Choose trial (or Auto-select by seed):").pack(anchor="w", padx=10, pady=(10, 4))
+
+        labels = ["Auto-select by seed"] + [label for _, label in options]
+        combo = ttk.Combobox(dialog, values=labels, state="readonly", width=70)
+        combo.pack(fill=tk.X, padx=10)
+        if self.recorded_trial_index_override is None:
+            combo.current(0)
+        else:
+            idx = next((i for i, (trial, _) in enumerate(options, start=1) if trial == self.recorded_trial_index_override), 0)
+            combo.current(idx)
+
+        result: dict[str, int | None | str] = {"value": "__cancel__"}
+
+        def choose() -> None:
+            sel = combo.current()
+            if sel <= 0:
+                result["value"] = None
+            else:
+                result["value"] = options[sel - 1][0]
+            dialog.destroy()
+
+        def cancel() -> None:
+            result["value"] = "__cancel__"
+            dialog.destroy()
+
+        btns = tk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=10, pady=10)
+        tk.Button(btns, text="Cancel", command=cancel, width=12).pack(side=tk.RIGHT, padx=4)
+        tk.Button(btns, text="Continue", command=choose, width=12).pack(side=tk.RIGHT, padx=4)
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        self.root.wait_window(dialog)
+        return result["value"]
+
+    def _get_recorded_trial_options(self) -> list[tuple[int, str]]:
+        if self.recorded_trial_options is not None:
+            return self.recorded_trial_options
+        mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
+        if not mat_path.exists():
+            return []
+        try:
+            import scipy.io as sio
+        except ImportError:
+            return []
+        try:
+            mat = sio.loadmat(mat_path, squeeze_me=True, struct_as_record=False)
+            epochs = np.ravel(mat["approachEpochs"])
+        except Exception:
+            return []
+
+        out: list[tuple[int, str]] = []
+        for i, cell in enumerate(epochs):
+            v = np.asarray(cell).astype(float).ravel()
+            valid = np.isfinite(v)
+            if not np.any(valid):
+                out.append((i, f"trial {i:03d} | unknown"))
+                continue
+            vv = v[valid]
+            approach_frac = float(np.mean(vv > 0.5))
+            if approach_frac <= 0.0:
+                cls = "non-approach"
+            elif approach_frac >= 1.0:
+                cls = "approach"
+            else:
+                cls = "mixed"
+            out.append((i, f"trial {i:03d} | {cls} | approach {approach_frac * 100:.1f}%"))
+
+        self.recorded_trial_options = out
+        return out
 
     def _select_generated_trajectory_mode(self, mode: str, label: str) -> None:
         if self.original_image is None:
