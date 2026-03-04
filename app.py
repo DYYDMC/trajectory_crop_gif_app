@@ -200,7 +200,6 @@ class TrajectoryCropApp:
         if not self._point_inside_image(event.x, event.y):
             return
 
-        self.trajectory_mode = "manual"
         self.drawing = True
         self.current_stroke = [(event.x - self.offset_x, event.y - self.offset_y)]
         self.status_var.set("Drawing trajectory...")
@@ -226,6 +225,7 @@ class TrajectoryCropApp:
             return
 
         self.trajectory = self.current_stroke[:]
+        self.trajectory_mode = "manual"
         self.current_stroke = []
         self.redraw_annotated_image()
 
