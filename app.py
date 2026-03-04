@@ -48,6 +48,7 @@ class TrajectoryCropApp:
         self.generated_n_frames = 180
         self.trajectory_seed = 0
         self.recorded_trial_index: int | None = None
+        self.recorded_trial_index_override: int | None = None
 
         self.crop_size: int | None = None
         self.sample_frequency: int | None = None
@@ -260,6 +261,25 @@ class TrajectoryCropApp:
         self._select_generated_trajectory_mode("running", "Running")
 
     def use_recorded_components_trajectory(self) -> None:
+        seed = simpledialog.askinteger(
+            "Recorded components seed",
+            "Enter deterministic seed (integer):",
+            initialvalue=self.trajectory_seed,
+            parent=self.root,
+        )
+        if seed is None:
+            return
+        self.trajectory_seed = int(seed)
+
+        trial_idx = simpledialog.askinteger(
+            "Recorded components trial index",
+            "Optional fixed trial index (0-104). Cancel = auto-select by seed:",
+            initialvalue=self.recorded_trial_index_override if self.recorded_trial_index_override is not None else 0,
+            minvalue=0,
+            maxvalue=104,
+            parent=self.root,
+        )
+        self.recorded_trial_index_override = int(trial_idx) if trial_idx is not None else None
         self._select_generated_trajectory_mode("recorded_components", "Recorded Components")
 
     def _select_generated_trajectory_mode(self, mode: str, label: str) -> None:
@@ -414,6 +434,9 @@ class TrajectoryCropApp:
             "trajectory_mode": self.trajectory_mode,
             "trajectory_seed": self.trajectory_seed if self.trajectory_mode in GENERATED_TRAJECTORY_MODES else None,
             "recorded_trial_index": self.recorded_trial_index if self.trajectory_mode == "recorded_components" else None,
+            "recorded_trial_index_override": (
+                self.recorded_trial_index_override if self.trajectory_mode == "recorded_components" else None
+            ),
             "crop_size": self.crop_size,
             "sample_frequency": self.sample_frequency,
             "display_scale": self.scale,
@@ -564,6 +587,7 @@ class TrajectoryCropApp:
                     crop_size=self.crop_size,
                     px_per_deg=35,
                     seed=self.trajectory_seed,
+                    trial_index=self.recorded_trial_index_override,
                 )
                 self.recorded_trial_index = trial_idx
             except Exception as exc:

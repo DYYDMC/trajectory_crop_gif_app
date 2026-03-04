@@ -125,6 +125,7 @@ def generate_gaze_from_recorded_components(
     crop_size=577,
     px_per_deg=35,
     seed=0,
+    trial_index=None,
 ):
     try:
         import scipy.io as sio
@@ -139,8 +140,13 @@ def generate_gaze_from_recorded_components(
     phi_l_cell = np.ravel(mat["phiL"])
     phi_r_cell = np.ravel(mat["phiR"])
 
-    rng = np.random.default_rng(seed)
-    trial_order = rng.permutation(len(mouse_xy_cell))
+    if trial_index is not None:
+        if trial_index < 0 or trial_index >= len(mouse_xy_cell):
+            raise ValueError(f"trial_index out of range: {trial_index} (valid: 0..{len(mouse_xy_cell)-1})")
+        trial_order = np.array([int(trial_index)], dtype=int)
+    else:
+        rng = np.random.default_rng(seed)
+        trial_order = rng.permutation(len(mouse_xy_cell))
 
     selected = None
     for t in trial_order:
