@@ -280,7 +280,8 @@ class TrajectoryCropApp:
         self.sampled_trajectory = []
         self.preview_overlay_enabled = False
         self.redraw_annotated_image()
-        self.status_var.set(f"{label} trajectory selected. Click Continue to set crop parameters and generate GIF.")
+        self.status_var.set(f"{label} trajectory selected. Setting crop parameters...")
+        self.continue_with_params()
 
     def continue_with_params(self) -> None:
         if self.original_image is None:
