@@ -3,6 +3,19 @@
 This file tracks implementation explanations by commit hash for this repo.
 
 ## (next commit)
+**Add layman guide for fitted Michaiel generator usage (`HOW2MICHAIEL.md`)**
+
+What changed:
+- Added `HOW2MICHAIEL.md` with practical, copy-paste usage instructions for:
+1. fitting parameters from `.mat`
+2. generating trajectories
+3. exporting CSV
+4. interpreting output coordinates and timing
+
+Why:
+- Makes the new fitted trajectory workflow accessible without requiring code-level understanding.
+
+## (next commit)
 **Add new fitted-from-recording generator module (`trajectory_generation_Michaiel.py`)**
 
 What changed:
