@@ -3,6 +3,23 @@
 This file tracks implementation explanations by commit hash for this repo.
 
 ## (next commit)
+**Add new fitted-from-recording generator module (`trajectory_generation_Michaiel.py`)**
+
+What changed:
+- Added a separate module for a paper-oriented, data-fitted trajectory workflow without touching existing app logic.
+- New parameter-fitting function:
+1. `fit_michaiel_params_from_mat(...)`
+2. infers fixation/saccade and noise-control parameters from `.mat` per mode (`approach`, `nonapproach`, `running`, `stationary`)
+- New generator:
+1. `generate_gaze_michaiel(...)`
+2. uses fitted parameters to generate trajectories in degrees, converts to pixels, centers, clamps to crop-valid bounds.
+- Added helper:
+1. `params_to_dict(...)` for metadata/debug logging.
+
+Why:
+- Keeps current baseline generator unchanged while enabling a more realistic intermediate model that is grounded in recorded signals.
+
+## (next commit)
 **Replace recorded trial inputbox with annotated dropdown selector**
 
 What changed:
