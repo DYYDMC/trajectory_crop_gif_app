@@ -2,6 +2,27 @@
 
 This file tracks implementation explanations by commit hash for this repo.
 
+## 4dad4d2
+**Add cache-first loading for recorded-components trials**
+
+What changed:
+- Refactored `generate_gaze_from_recorded_components(...)` to load pre-extracted trial components from cache instead of parsing `.mat` on every call.
+- Added recorded-components cache builder and loader utilities in `trajectory_generation.py`:
+1. `build_recorded_components_cache(...)`
+2. `_load_recorded_components_trials(...)`
+3. `_extract_recorded_components_trials_from_mat(...)`
+- Added versioned cache file path resolution:
+1. `Michaiel_gaze_2020/derived/recorded_components_cache_v1.npz`
+2. `RECORDED_COMPONENTS_CACHE_VERSION = 1`
+- Added cache resilience behavior:
+1. build once if cache is missing
+2. auto-rebuild if cache is stale/corrupt/version-mismatched
+3. then reload from cache
+- Preserved trajectory output logic (same body/head/eye component fusion and gain application), with source of components switched to cache-first.
+
+Why:
+- Avoids repeated heavy `.mat` loading/interpolation for recorded-components mode, reducing latency and improving UI responsiveness for repeated runs.
+
 ## cb9f7ec
 **Optimize dot overlay preview by using async in-memory rendering**
 
