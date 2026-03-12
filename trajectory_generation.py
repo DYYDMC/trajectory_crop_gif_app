@@ -1,5 +1,7 @@
 import numpy as np
 
+RECORDED_COMPONENTS_CACHE_VERSION = 1
+
 
 def generate_gaze(
     n_frames,
@@ -128,44 +130,25 @@ def generate_gaze_from_recorded_components(
     trial_index=None,
     gain=1.0,
 ):
-    try:
-        import scipy.io as sio
-    except ImportError as exc:
-        raise RuntimeError("scipy is required for recorded-components trajectory mode") from exc
-
-    mat = sio.loadmat(mat_path, squeeze_me=True, struct_as_record=False)
-    mouse_xy_cell = np.ravel(mat["mouse_xy"])
-    head_theta_cell = np.ravel(mat["headTheta"])
-    theta_l_cell = np.ravel(mat["thetaL"])
-    theta_r_cell = np.ravel(mat["thetaR"])
-    phi_l_cell = np.ravel(mat["phiL"])
-    phi_r_cell = np.ravel(mat["phiR"])
+    trials = _load_recorded_components_trials(mat_path)
+    if not trials:
+        raise RuntimeError("No recorded-components trials available in cache or source .mat.")
 
     if trial_index is not None:
-        if trial_index < 0 or trial_index >= len(mouse_xy_cell):
-            raise ValueError(f"trial_index out of range: {trial_index} (valid: 0..{len(mouse_xy_cell)-1})")
+        if trial_index < 0 or trial_index >= len(trials):
+            raise ValueError(f"trial_index out of range: {trial_index} (valid: 0..{len(trials)-1})")
         trial_order = np.array([int(trial_index)], dtype=int)
     else:
         rng = np.random.default_rng(seed)
-        trial_order = rng.permutation(len(mouse_xy_cell))
+        trial_order = rng.permutation(len(trials))
 
     selected = None
     for t in trial_order:
-        mxy = np.asarray(mouse_xy_cell[t], dtype=float)
-        if mxy.ndim != 2 or mxy.shape[0] < 2:
-            continue
-        body_x = _interp_nan_1d(mxy[0])
-        body_y = _interp_nan_1d(mxy[1])
-        body_yaw = np.degrees(np.arctan2(np.diff(body_y, prepend=body_y[0]), np.diff(body_x, prepend=body_x[0])))
-        head_yaw = _interp_nan_1d(np.asarray(head_theta_cell[t], dtype=float))
-        eye_yaw = 0.5 * (
-            _interp_nan_1d(np.asarray(theta_l_cell[t], dtype=float))
-            + _interp_nan_1d(np.asarray(theta_r_cell[t], dtype=float))
-        )
-        eye_pitch = 0.5 * (
-            _interp_nan_1d(np.asarray(phi_l_cell[t], dtype=float))
-            + _interp_nan_1d(np.asarray(phi_r_cell[t], dtype=float))
-        )
+        row = trials[int(t)]
+        body_yaw = row["body_yaw"]
+        head_yaw = row["head_yaw"]
+        eye_yaw = row["eye_yaw"]
+        eye_pitch = row["eye_pitch"]
         lens = [len(body_yaw), len(head_yaw), len(eye_yaw), len(eye_pitch)]
         n = int(min(lens))
         if n >= max(5, n_frames):
@@ -194,3 +177,138 @@ def generate_gaze_from_recorded_components(
     n_out = min(n_frames, x.size)
     points = [(float(x[i]), float(y[i])) for i in range(n_out)]
     return points, int(trial_idx)
+
+
+def _resolve_recorded_components_cache_path(mat_path) -> str:
+    from pathlib import Path
+
+    p = Path(mat_path)
+    return str(p.parent / "derived" / "recorded_components_cache_v1.npz")
+
+
+def _extract_recorded_components_trials_from_mat(mat_path) -> list[dict[str, np.ndarray]]:
+    try:
+        import scipy.io as sio
+    except ImportError as exc:
+        raise RuntimeError("scipy is required for recorded-components trajectory mode") from exc
+
+    mat = sio.loadmat(mat_path, squeeze_me=True, struct_as_record=False)
+    mouse_xy_cell = np.ravel(mat["mouse_xy"])
+    head_theta_cell = np.ravel(mat["headTheta"])
+    theta_l_cell = np.ravel(mat["thetaL"])
+    theta_r_cell = np.ravel(mat["thetaR"])
+    phi_l_cell = np.ravel(mat["phiL"])
+    phi_r_cell = np.ravel(mat["phiR"])
+
+    out: list[dict[str, np.ndarray]] = []
+    for i in range(len(mouse_xy_cell)):
+        mxy = np.asarray(mouse_xy_cell[i], dtype=float)
+        if mxy.ndim != 2 or mxy.shape[0] < 2:
+            body_yaw = np.zeros((0,), dtype=float)
+            head_yaw = np.zeros((0,), dtype=float)
+            eye_yaw = np.zeros((0,), dtype=float)
+            eye_pitch = np.zeros((0,), dtype=float)
+        else:
+            body_x = _interp_nan_1d(mxy[0])
+            body_y = _interp_nan_1d(mxy[1])
+            body_yaw = np.degrees(np.arctan2(np.diff(body_y, prepend=body_y[0]), np.diff(body_x, prepend=body_x[0])))
+            head_yaw = _interp_nan_1d(np.asarray(head_theta_cell[i], dtype=float))
+            eye_yaw = 0.5 * (
+                _interp_nan_1d(np.asarray(theta_l_cell[i], dtype=float))
+                + _interp_nan_1d(np.asarray(theta_r_cell[i], dtype=float))
+            )
+            eye_pitch = 0.5 * (
+                _interp_nan_1d(np.asarray(phi_l_cell[i], dtype=float))
+                + _interp_nan_1d(np.asarray(phi_r_cell[i], dtype=float))
+            )
+        out.append(
+            {
+                "body_yaw": np.asarray(body_yaw, dtype=np.float32),
+                "head_yaw": np.asarray(head_yaw, dtype=np.float32),
+                "eye_yaw": np.asarray(eye_yaw, dtype=np.float32),
+                "eye_pitch": np.asarray(eye_pitch, dtype=np.float32),
+            }
+        )
+    return out
+
+
+def build_recorded_components_cache(mat_path, cache_path=None) -> str:
+    from pathlib import Path
+
+    mat_path = str(mat_path)
+    if cache_path is None:
+        cache_path = _resolve_recorded_components_cache_path(mat_path)
+    cache_path = str(cache_path)
+    Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+
+    trials = _extract_recorded_components_trials_from_mat(mat_path)
+    n_trials = len(trials)
+    body = np.empty(n_trials, dtype=object)
+    head = np.empty(n_trials, dtype=object)
+    eye_yaw = np.empty(n_trials, dtype=object)
+    eye_pitch = np.empty(n_trials, dtype=object)
+    for i, row in enumerate(trials):
+        body[i] = row["body_yaw"]
+        head[i] = row["head_yaw"]
+        eye_yaw[i] = row["eye_yaw"]
+        eye_pitch[i] = row["eye_pitch"]
+
+    np.savez_compressed(
+        cache_path,
+        version=np.array([RECORDED_COMPONENTS_CACHE_VERSION], dtype=np.int32),
+        body_yaw=body,
+        head_yaw=head,
+        eye_yaw=eye_yaw,
+        eye_pitch=eye_pitch,
+    )
+    return cache_path
+
+
+def _load_recorded_components_trials(mat_path) -> list[dict[str, np.ndarray]]:
+    from pathlib import Path
+
+    cache_path = Path(_resolve_recorded_components_cache_path(mat_path))
+    if not cache_path.exists():
+        build_recorded_components_cache(mat_path, cache_path)
+
+    try:
+        z = np.load(cache_path, allow_pickle=True)
+        version = int(np.asarray(z["version"]).ravel()[0])
+        if version != RECORDED_COMPONENTS_CACHE_VERSION:
+            raise RuntimeError("Cache version mismatch")
+        body = z["body_yaw"]
+        head = z["head_yaw"]
+        eye_yaw = z["eye_yaw"]
+        eye_pitch = z["eye_pitch"]
+        n = int(len(body))
+        out: list[dict[str, np.ndarray]] = []
+        for i in range(n):
+            out.append(
+                {
+                    "body_yaw": np.asarray(body[i], dtype=float),
+                    "head_yaw": np.asarray(head[i], dtype=float),
+                    "eye_yaw": np.asarray(eye_yaw[i], dtype=float),
+                    "eye_pitch": np.asarray(eye_pitch[i], dtype=float),
+                }
+            )
+        return out
+    except Exception:
+        # Rebuild once if cache is missing/corrupt/stale, then reload.
+        build_recorded_components_cache(mat_path, cache_path)
+        z = np.load(cache_path, allow_pickle=True)
+        body = z["body_yaw"]
+        head = z["head_yaw"]
+        eye_yaw = z["eye_yaw"]
+        eye_pitch = z["eye_pitch"]
+        n = int(len(body))
+        out = []
+        for i in range(n):
+            out.append(
+                {
+                    "body_yaw": np.asarray(body[i], dtype=float),
+                    "head_yaw": np.asarray(head[i], dtype=float),
+                    "eye_yaw": np.asarray(eye_yaw[i], dtype=float),
+                    "eye_pitch": np.asarray(eye_pitch[i], dtype=float),
+                }
+            )
+        return out
