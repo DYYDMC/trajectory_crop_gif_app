@@ -82,10 +82,14 @@ class TrajectoryCropApp:
         self.dot_intensity = 255
         self.dot_trajectory_mode = "stationary"
         self.dot_trajectory_seed = 0
+        self.dot_recorded_trial_index: int | None = None
+        self.dot_recorded_trial_index_override: int | None = None
         self.dot_sampled_trajectory: list[tuple[int, int]] = []
         self.dot_gif_frames: list[ImageTk.PhotoImage] = []
         self.dot_gif_frame_idx = 0
         self.dot_gif_after_id: str | None = None
+        self.dot_preview_pil_frames: list[Image.Image] = []
+        self.dot_current_tk_frame: ImageTk.PhotoImage | None = None
         self.dot_preview_job_id = 0
         self.dot_preview_in_progress = False
         self.dot_mask_cache: dict[int, np.ndarray] = {}
@@ -103,7 +107,9 @@ class TrajectoryCropApp:
         row1 = tk.Frame(controls)
         row1.pack(fill=tk.X, pady=(0, 2))
         row2 = tk.Frame(controls)
-        row2.pack(fill=tk.X)
+        row2.pack(fill=tk.X, pady=(0, 2))
+        row3 = tk.Frame(controls)
+        row3.pack(fill=tk.X)
 
         tk.Button(row1, text="Upload Image", command=self.prompt_image_selection).pack(side=tk.LEFT, padx=4)
         tk.Button(row1, text="Redraw Trajectory", command=self.reset_trajectory).pack(side=tk.LEFT, padx=4)
@@ -117,6 +123,12 @@ class TrajectoryCropApp:
         tk.Button(row2, text="Running Trajectory", command=self.use_running_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(row2, text="Recorded Components", command=self.use_recorded_components_trajectory).pack(side=tk.LEFT, padx=4)
         tk.Button(row2, text="Michaiel Fitted", command=self.use_michaiel_fitted_trajectory).pack(side=tk.LEFT, padx=4)
+        tk.Button(row3, text="Dot: Approach", command=lambda: self._set_dot_mode("approach")).pack(side=tk.LEFT, padx=4)
+        tk.Button(row3, text="Dot: Nonapproach", command=lambda: self._set_dot_mode("nonapproach")).pack(side=tk.LEFT, padx=4)
+        tk.Button(row3, text="Dot: Stationary", command=lambda: self._set_dot_mode("stationary")).pack(side=tk.LEFT, padx=4)
+        tk.Button(row3, text="Dot: Running", command=lambda: self._set_dot_mode("running")).pack(side=tk.LEFT, padx=4)
+        tk.Button(row3, text="Dot: Recorded Components", command=lambda: self._set_dot_mode("recorded_components")).pack(side=tk.LEFT, padx=4)
+        tk.Button(row3, text="Dot: Michaiel Fitted", command=lambda: self._set_dot_mode("michaiel_fitted")).pack(side=tk.LEFT, padx=4)
 
         self.status_var = tk.StringVar(value="Select an image to start.")
         tk.Label(top, textvariable=self.status_var, anchor="w").pack(fill=tk.X, expand=True, padx=12, pady=(6, 0))
@@ -194,12 +206,16 @@ class TrajectoryCropApp:
         self.gif_frame_idx = 0
         self.dot_gif_frames = []
         self.dot_gif_frame_idx = 0
+        self.dot_preview_pil_frames = []
+        self.dot_current_tk_frame = None
         self.crop_size = None
         self.sample_frequency = None
         self.latest_frames_unnormalized = None
         self.latest_frames_normalized_u8 = None
         self.latest_frames_with_dot_u8 = None
         self.dot_overlay_enabled = False
+        self.dot_recorded_trial_index = None
+        self.dot_recorded_trial_index_override = None
         self.dot_sampled_trajectory = []
         self.reset_trajectory()
         self.refresh_display_image()
@@ -683,6 +699,8 @@ class TrajectoryCropApp:
             self.dot_gif_label.configure(image="", text="No dot-overlay GIF yet")
             self.dot_gif_frames = []
             self.dot_gif_frame_idx = 0
+            self.dot_preview_pil_frames = []
+            self.dot_current_tk_frame = None
         self.status_var.set("GIF generated. Review and choose Accept or Change Something.")
 
     def load_and_play_gif(self, gif_path: Path) -> None:
@@ -745,11 +763,12 @@ class TrajectoryCropApp:
         self._tick_dot_gif()
 
     def _tick_dot_gif(self) -> None:
-        if not self.dot_gif_frames:
+        if not self.dot_preview_pil_frames:
             return
-        frame = self.dot_gif_frames[self.dot_gif_frame_idx]
+        frame = ImageTk.PhotoImage(self.dot_preview_pil_frames[self.dot_gif_frame_idx])
+        self.dot_current_tk_frame = frame
         self.dot_gif_label.configure(image=frame, text="")
-        self.dot_gif_frame_idx = (self.dot_gif_frame_idx + 1) % len(self.dot_gif_frames)
+        self.dot_gif_frame_idx = (self.dot_gif_frame_idx + 1) % len(self.dot_preview_pil_frames)
         self.dot_gif_after_id = self.root.after(int(1000 / GIF_FPS), self._tick_dot_gif)
 
     def stop_dot_gif_animation(self) -> None:
@@ -757,41 +776,12 @@ class TrajectoryCropApp:
             self.root.after_cancel(self.dot_gif_after_id)
             self.dot_gif_after_id = None
 
-    def _prompt_mode_dropdown(
-        self,
-        title: str,
-        prompt: str,
-        options: list[str],
-        initial: str,
-    ) -> str | None:
-        dialog = tk.Toplevel(self.root)
-        dialog.title(title)
-        dialog.geometry("420x140")
-        dialog.transient(self.root)
-        dialog.grab_set()
-
-        tk.Label(dialog, text=prompt).pack(anchor="w", padx=10, pady=(10, 4))
-        combo = ttk.Combobox(dialog, values=options, state="readonly", width=30)
-        combo.pack(fill=tk.X, padx=10)
-        combo.current(options.index(initial) if initial in options else 0)
-
-        result: dict[str, str | None] = {"value": None}
-
-        def choose() -> None:
-            result["value"] = options[combo.current()]
-            dialog.destroy()
-
-        def cancel() -> None:
-            result["value"] = None
-            dialog.destroy()
-
-        btns = tk.Frame(dialog)
-        btns.pack(fill=tk.X, padx=10, pady=10)
-        tk.Button(btns, text="Cancel", command=cancel, width=12).pack(side=tk.RIGHT, padx=4)
-        tk.Button(btns, text="Continue", command=choose, width=12).pack(side=tk.RIGHT, padx=4)
-        dialog.protocol("WM_DELETE_WINDOW", cancel)
-        self.root.wait_window(dialog)
-        return result["value"]
+    def _set_dot_mode(self, mode: str) -> None:
+        self.dot_trajectory_mode = mode
+        if mode != "recorded_components":
+            self.dot_recorded_trial_index = None
+            self.dot_recorded_trial_index_override = None
+        self.status_var.set(f"Dot trajectory mode set to: {mode}. Click Configure Dot Overlay to apply.")
 
     def configure_dot_overlay(self) -> None:
         if self.latest_frames_normalized_u8 is None or self.crop_size is None:
@@ -817,15 +807,11 @@ class TrajectoryCropApp:
         )
         if intensity is None:
             return
-        mode_options = sorted(list(GENERATED_TRAJECTORY_MODES))
-        mode = self._prompt_mode_dropdown(
-            title="Dot trajectory mode",
-            prompt="Choose dot movement mode:",
-            options=mode_options,
-            initial=self.dot_trajectory_mode,
-        )
-        if mode is None:
-            return
+        if self.dot_trajectory_mode == "recorded_components":
+            selected = self._prompt_dot_recorded_trial_dropdown()
+            if selected == "__cancel__":
+                return
+            self.dot_recorded_trial_index_override = selected
         seed = simpledialog.askinteger(
             "Dot seed",
             "Enter deterministic seed for dot trajectory:",
@@ -837,10 +823,78 @@ class TrajectoryCropApp:
 
         self.dot_size_px = int(size)
         self.dot_intensity = int(intensity)
-        self.dot_trajectory_mode = mode
         self.dot_trajectory_seed = int(seed)
         self.dot_overlay_enabled = True
         self.generate_dot_overlay_preview()
+
+    def _prompt_dot_recorded_trial_dropdown(self) -> int | None | str:
+        options = self._get_recorded_trial_options()
+        if not options:
+            messagebox.showerror("Missing dataset", "Could not load trial labels from approachEpochs.")
+            return "__cancel__"
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Dot recorded-components trial")
+        dialog.geometry("540x160")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Choose dot trial (or Auto-select by seed):").pack(anchor="w", padx=10, pady=(10, 4))
+
+        labels = ["Auto-select by seed"] + [label for _, label in options]
+        combo = ttk.Combobox(dialog, values=labels, state="readonly", width=70)
+        combo.pack(fill=tk.X, padx=10)
+        if self.dot_recorded_trial_index_override is None:
+            combo.current(0)
+        else:
+            idx = next((i for i, (trial, _) in enumerate(options, start=1) if trial == self.dot_recorded_trial_index_override), 0)
+            combo.current(idx)
+
+        result: dict[str, int | None | str] = {"value": "__cancel__"}
+
+        def choose() -> None:
+            sel = combo.current()
+            if sel <= 0:
+                result["value"] = None
+            else:
+                result["value"] = options[sel - 1][0]
+            dialog.destroy()
+
+        def cancel() -> None:
+            result["value"] = "__cancel__"
+            dialog.destroy()
+
+        btns = tk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=10, pady=10)
+        tk.Button(btns, text="Cancel", command=cancel, width=12).pack(side=tk.RIGHT, padx=4)
+        tk.Button(btns, text="Continue", command=choose, width=12).pack(side=tk.RIGHT, padx=4)
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        self.root.wait_window(dialog)
+        return result["value"]
+
+    def _constrain_dot_points_to_center_area(
+        self,
+        pts: list[tuple[int, int]],
+        frame_w: int,
+        frame_h: int,
+        radius_px: int,
+    ) -> list[tuple[int, int]]:
+        # Keep dot center at least one dot diameter away from each edge.
+        margin = max(1, int(2 * radius_px))
+        min_x = margin
+        max_x = frame_w - 1 - margin
+        min_y = margin
+        max_y = frame_h - 1 - margin
+        if max_x < min_x:
+            min_x = max_x = frame_w // 2
+        if max_y < min_y:
+            min_y = max_y = frame_h // 2
+        out: list[tuple[int, int]] = []
+        for x, y in pts:
+            cx = int(np.clip(x, min_x, max_x))
+            cy = int(np.clip(y, min_y, max_y))
+            out.append((cx, cy))
+        return out
 
     def _compute_dot_trajectory(
         self,
@@ -852,11 +906,12 @@ class TrajectoryCropApp:
         gain: float,
         michaiel_mode: str,
         dot_radius_px: int,
-    ) -> list[tuple[int, int]]:
+        trial_index_override: int | None,
+    ) -> tuple[list[tuple[int, int]], int | None]:
         dot_crop_guard = max(2, int(2 * dot_radius_px + 1))
         if mode == "recorded_components":
             mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
-            sampled_orig, _trial_idx = generate_gaze_from_recorded_components(
+            sampled_orig, trial_idx = generate_gaze_from_recorded_components(
                 n_frames=n_frames,
                 mat_path=mat_path,
                 pano_w=frame_w,
@@ -864,7 +919,7 @@ class TrajectoryCropApp:
                 crop_size=dot_crop_guard,
                 px_per_deg=35,
                 seed=seed,
-                trial_index=None,
+                trial_index=trial_index_override,
                 gain=gain,
             )
         elif mode == "michaiel_fitted":
@@ -878,6 +933,7 @@ class TrajectoryCropApp:
                 px_per_deg=35,
                 seed=seed,
             )
+            trial_idx = None
         else:
             sampled_orig = generate_gaze(
                 n_frames=n_frames,
@@ -889,10 +945,11 @@ class TrajectoryCropApp:
                 px_per_deg=35,
                 seed=seed,
             )
+            trial_idx = None
         out = []
         for x, y in sampled_orig:
             out.append((int(round(x)), int(round(y))))
-        return out
+        return out, trial_idx
 
     def _get_dot_mask(self, radius_px: int) -> np.ndarray:
         radius = max(1, int(radius_px))
@@ -933,22 +990,16 @@ class TrajectoryCropApp:
             patch[mask] = intensity
         return out
 
-    def _set_dot_preview_frames(self, frames_with_dot: np.ndarray) -> None:
+    def _set_dot_preview_frames(self, pil_frames: list[Image.Image]) -> None:
         self.stop_dot_gif_animation()
-        frames: list[ImageTk.PhotoImage] = []
-        n = frames_with_dot.shape[-1]
-        for idx in range(n):
-            frame_np = frames_with_dot[..., idx]
-            frame = Image.fromarray(frame_np, mode="RGB").resize(
-                (self.gif_viewport_size, self.gif_viewport_size), Image.Resampling.NEAREST
-            )
-            frames.append(ImageTk.PhotoImage(frame))
-        if not frames:
+        if not pil_frames:
             self.dot_gif_label.configure(image="", text="No dot-overlay GIF yet")
             self.dot_gif_frames = []
             self.dot_gif_frame_idx = 0
+            self.dot_preview_pil_frames = []
+            self.dot_current_tk_frame = None
             return
-        self.dot_gif_frames = frames
+        self.dot_preview_pil_frames = pil_frames
         self.dot_gif_frame_idx = 0
         self._tick_dot_gif()
 
@@ -966,6 +1017,7 @@ class TrajectoryCropApp:
         michaiel_mode = self.michaiel_mode
         radius = self.dot_size_px
         intensity = self.dot_intensity
+        dot_trial_index_override = self.dot_recorded_trial_index_override
         self.dot_preview_job_id += 1
         job_id = self.dot_preview_job_id
         self.dot_preview_in_progress = True
@@ -973,7 +1025,7 @@ class TrajectoryCropApp:
 
         def worker() -> None:
             try:
-                pts = self._compute_dot_trajectory(
+                pts, trial_idx = self._compute_dot_trajectory(
                     n_frames=n,
                     frame_w=w,
                     frame_h=h,
@@ -982,11 +1034,27 @@ class TrajectoryCropApp:
                     gain=gain,
                     michaiel_mode=michaiel_mode,
                     dot_radius_px=radius,
+                    trial_index_override=dot_trial_index_override,
                 )
+                pts = self._constrain_dot_points_to_center_area(pts, frame_w=w, frame_h=h, radius_px=radius)
                 frames_with_dot = self._overlay_moving_dot(base, pts, radius, intensity)
-                result = {"ok": True, "pts": pts, "frames": frames_with_dot, "error": ""}
+                pil_frames: list[Image.Image] = []
+                for idx in range(frames_with_dot.shape[-1]):
+                    frame_np = frames_with_dot[..., idx]
+                    frame = Image.fromarray(frame_np, mode="RGB").resize(
+                        (self.gif_viewport_size, self.gif_viewport_size), Image.Resampling.NEAREST
+                    )
+                    pil_frames.append(frame)
+                result = {
+                    "ok": True,
+                    "pts": pts,
+                    "trial_idx": trial_idx,
+                    "frames": frames_with_dot,
+                    "pil_frames": pil_frames,
+                    "error": "",
+                }
             except Exception as exc:
-                result = {"ok": False, "pts": [], "frames": None, "error": str(exc)}
+                result = {"ok": False, "pts": [], "trial_idx": None, "frames": None, "pil_frames": [], "error": str(exc)}
 
             def apply_result() -> None:
                 if job_id != self.dot_preview_job_id:
@@ -996,8 +1064,9 @@ class TrajectoryCropApp:
                     messagebox.showerror("Dot overlay failed", str(result["error"]))
                     return
                 self.dot_sampled_trajectory = result["pts"]  # type: ignore[assignment]
+                self.dot_recorded_trial_index = result["trial_idx"]  # type: ignore[assignment]
                 self.latest_frames_with_dot_u8 = result["frames"]  # type: ignore[assignment]
-                self._set_dot_preview_frames(self.latest_frames_with_dot_u8)
+                self._set_dot_preview_frames(result["pil_frames"])  # type: ignore[arg-type]
                 self.status_var.set("Dot overlay preview generated.")
 
             self.root.after(0, apply_result)
@@ -1049,6 +1118,12 @@ class TrajectoryCropApp:
                 "intensity_uint8": self.dot_intensity,
                 "trajectory_mode": self.dot_trajectory_mode,
                 "trajectory_seed": self.dot_trajectory_seed,
+                "recorded_trial_index": (
+                    self.dot_recorded_trial_index if self.dot_trajectory_mode == "recorded_components" else None
+                ),
+                "recorded_trial_index_override": (
+                    self.dot_recorded_trial_index_override if self.dot_trajectory_mode == "recorded_components" else None
+                ),
                 "dot_trajectory_xy": self.dot_sampled_trajectory,
             },
             "saved_files": {
