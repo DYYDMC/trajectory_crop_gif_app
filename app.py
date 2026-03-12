@@ -33,7 +33,7 @@ class TrajectoryCropApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Trajectory Crop GIF App")
-        self.root.geometry("1400x820")
+        self.root.geometry("1400x920")
 
         self.base_output_dir = Path(__file__).resolve().parent / "outputs"
         self.base_output_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +76,16 @@ class TrajectoryCropApp:
         self.gif_after_id: str | None = None
         self.latest_frames_unnormalized: np.ndarray | None = None
         self.latest_frames_normalized_u8: np.ndarray | None = None
+        self.latest_frames_with_dot_u8: np.ndarray | None = None
+        self.dot_overlay_enabled = False
+        self.dot_size_px = 3
+        self.dot_intensity = 255
+        self.dot_trajectory_mode = "stationary"
+        self.dot_trajectory_seed = 0
+        self.dot_sampled_trajectory: list[tuple[int, int]] = []
+        self.dot_gif_frames: list[ImageTk.PhotoImage] = []
+        self.dot_gif_frame_idx = 0
+        self.dot_gif_after_id: str | None = None
 
         self._build_ui()
         self.prompt_image_selection()
@@ -122,14 +132,22 @@ class TrajectoryCropApp:
         right = tk.LabelFrame(content, text="Generated GIF (30Hz)")
         right.pack(side=tk.LEFT, fill=tk.Y, expand=False, padx=(6, 0))
 
+        tk.Button(row1, text="Configure Dot Overlay", command=self.configure_dot_overlay).pack(side=tk.LEFT, padx=4)
+
         # Keep a square viewport so crop GIF frames are never displayed squeezed.
-        self.gif_viewport_size = 440
+        self.gif_viewport_size = 320
         gif_viewport = tk.Frame(right, width=self.gif_viewport_size, height=self.gif_viewport_size, bg="#1e1e1e")
         gif_viewport.pack(padx=8, pady=8)
         gif_viewport.pack_propagate(False)
 
         self.gif_label = tk.Label(gif_viewport, text="No GIF generated yet", bg="#1e1e1e", fg="white")
         self.gif_label.pack(fill=tk.BOTH, expand=True)
+
+        dot_viewport = tk.Frame(right, width=self.gif_viewport_size, height=self.gif_viewport_size, bg="#1e1e1e")
+        dot_viewport.pack(padx=8, pady=(0, 8))
+        dot_viewport.pack_propagate(False)
+        self.dot_gif_label = tk.Label(dot_viewport, text="No dot-overlay GIF yet", bg="#1e1e1e", fg="white")
+        self.dot_gif_label.pack(fill=tk.BOTH, expand=True)
 
     def prompt_image_selection(self) -> None:
         filetypes = [
@@ -166,13 +184,20 @@ class TrajectoryCropApp:
 
     def reset_state_for_new_image(self) -> None:
         self.stop_gif_animation()
+        self.stop_dot_gif_animation()
         self.gif_label.configure(image="", text="No GIF generated yet")
+        self.dot_gif_label.configure(image="", text="No dot-overlay GIF yet")
         self.gif_frames = []
         self.gif_frame_idx = 0
+        self.dot_gif_frames = []
+        self.dot_gif_frame_idx = 0
         self.crop_size = None
         self.sample_frequency = None
         self.latest_frames_unnormalized = None
         self.latest_frames_normalized_u8 = None
+        self.latest_frames_with_dot_u8 = None
+        self.dot_overlay_enabled = False
+        self.dot_sampled_trajectory = []
         self.reset_trajectory()
         self.refresh_display_image()
 
@@ -639,6 +664,7 @@ class TrajectoryCropApp:
 
         self.latest_frames_unnormalized = frames_native
         self.latest_frames_normalized_u8 = frames_uint8
+        self.latest_frames_with_dot_u8 = None
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         run_dir = self.base_output_dir / f"run_{ts}"
@@ -647,6 +673,13 @@ class TrajectoryCropApp:
         save_gif_from_frames(frames_uint8, gif_path, GIF_FPS)
 
         self.load_and_play_gif(gif_path)
+        if self.dot_overlay_enabled:
+            self.generate_dot_overlay_preview()
+        else:
+            self.stop_dot_gif_animation()
+            self.dot_gif_label.configure(image="", text="No dot-overlay GIF yet")
+            self.dot_gif_frames = []
+            self.dot_gif_frame_idx = 0
         self.status_var.set("GIF generated. Review and choose Accept or Change Something.")
 
     def load_and_play_gif(self, gif_path: Path) -> None:
@@ -684,6 +717,217 @@ class TrajectoryCropApp:
         if self.gif_after_id is not None:
             self.root.after_cancel(self.gif_after_id)
             self.gif_after_id = None
+
+    def load_and_play_dot_gif(self, gif_path: Path) -> None:
+        self.stop_dot_gif_animation()
+        pil_gif = Image.open(gif_path)
+        frames = []
+        try:
+            idx = 0
+            while True:
+                pil_gif.seek(idx)
+                frame = pil_gif.convert("RGB").resize(
+                    (self.gif_viewport_size, self.gif_viewport_size), Image.Resampling.NEAREST
+                )
+                frames.append(ImageTk.PhotoImage(frame))
+                idx += 1
+        except EOFError:
+            pass
+
+        if not frames:
+            return
+
+        self.dot_gif_frames = frames
+        self.dot_gif_frame_idx = 0
+        self._tick_dot_gif()
+
+    def _tick_dot_gif(self) -> None:
+        if not self.dot_gif_frames:
+            return
+        frame = self.dot_gif_frames[self.dot_gif_frame_idx]
+        self.dot_gif_label.configure(image=frame, text="")
+        self.dot_gif_frame_idx = (self.dot_gif_frame_idx + 1) % len(self.dot_gif_frames)
+        self.dot_gif_after_id = self.root.after(int(1000 / GIF_FPS), self._tick_dot_gif)
+
+    def stop_dot_gif_animation(self) -> None:
+        if self.dot_gif_after_id is not None:
+            self.root.after_cancel(self.dot_gif_after_id)
+            self.dot_gif_after_id = None
+
+    def _prompt_mode_dropdown(
+        self,
+        title: str,
+        prompt: str,
+        options: list[str],
+        initial: str,
+    ) -> str | None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("420x140")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text=prompt).pack(anchor="w", padx=10, pady=(10, 4))
+        combo = ttk.Combobox(dialog, values=options, state="readonly", width=30)
+        combo.pack(fill=tk.X, padx=10)
+        combo.current(options.index(initial) if initial in options else 0)
+
+        result: dict[str, str | None] = {"value": None}
+
+        def choose() -> None:
+            result["value"] = options[combo.current()]
+            dialog.destroy()
+
+        def cancel() -> None:
+            result["value"] = None
+            dialog.destroy()
+
+        btns = tk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=10, pady=10)
+        tk.Button(btns, text="Cancel", command=cancel, width=12).pack(side=tk.RIGHT, padx=4)
+        tk.Button(btns, text="Continue", command=choose, width=12).pack(side=tk.RIGHT, padx=4)
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        self.root.wait_window(dialog)
+        return result["value"]
+
+    def configure_dot_overlay(self) -> None:
+        if self.latest_frames_normalized_u8 is None or self.crop_size is None:
+            messagebox.showerror("Missing base GIF", "Generate a base GIF preview first, then configure the dot overlay.")
+            return
+
+        size = simpledialog.askinteger(
+            "Dot size",
+            "Enter dot radius in pixels:",
+            initialvalue=self.dot_size_px,
+            minvalue=1,
+            parent=self.root,
+        )
+        if size is None:
+            return
+        intensity = simpledialog.askinteger(
+            "Dot intensity",
+            "Enter dot intensity (uint8, 0..255):",
+            initialvalue=self.dot_intensity,
+            minvalue=0,
+            maxvalue=255,
+            parent=self.root,
+        )
+        if intensity is None:
+            return
+        mode_options = sorted(list(GENERATED_TRAJECTORY_MODES))
+        mode = self._prompt_mode_dropdown(
+            title="Dot trajectory mode",
+            prompt="Choose dot movement mode:",
+            options=mode_options,
+            initial=self.dot_trajectory_mode,
+        )
+        if mode is None:
+            return
+        seed = simpledialog.askinteger(
+            "Dot seed",
+            "Enter deterministic seed for dot trajectory:",
+            initialvalue=self.dot_trajectory_seed,
+            parent=self.root,
+        )
+        if seed is None:
+            return
+
+        self.dot_size_px = int(size)
+        self.dot_intensity = int(intensity)
+        self.dot_trajectory_mode = mode
+        self.dot_trajectory_seed = int(seed)
+        self.dot_overlay_enabled = True
+        self.generate_dot_overlay_preview()
+
+    def _compute_dot_trajectory(self, n_frames: int, frame_w: int, frame_h: int) -> list[tuple[int, int]]:
+        dot_crop_guard = max(2, int(2 * self.dot_size_px + 1))
+        if self.dot_trajectory_mode == "recorded_components":
+            mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
+            sampled_orig, _trial_idx = generate_gaze_from_recorded_components(
+                n_frames=n_frames,
+                mat_path=mat_path,
+                pano_w=frame_w,
+                pano_h=frame_h,
+                crop_size=dot_crop_guard,
+                px_per_deg=35,
+                seed=self.dot_trajectory_seed,
+                trial_index=None,
+                gain=self.recorded_components_gain,
+            )
+        elif self.dot_trajectory_mode == "michaiel_fitted":
+            params = self._get_michaiel_params(self.michaiel_mode)
+            sampled_orig = generate_gaze_michaiel(
+                n_frames=n_frames,
+                params=params,
+                pano_w=frame_w,
+                pano_h=frame_h,
+                crop_size=dot_crop_guard,
+                px_per_deg=35,
+                seed=self.dot_trajectory_seed,
+            )
+        else:
+            sampled_orig = generate_gaze(
+                n_frames=n_frames,
+                mode=self.dot_trajectory_mode,
+                pano_w=frame_w,
+                pano_h=frame_h,
+                crop_size=dot_crop_guard,
+                fps=GIF_FPS,
+                px_per_deg=35,
+                seed=self.dot_trajectory_seed,
+            )
+        out = []
+        for x, y in sampled_orig:
+            out.append((int(round(x)), int(round(y))))
+        return out
+
+    def _overlay_moving_dot(
+        self,
+        frames_u8: np.ndarray,
+        pts: list[tuple[int, int]],
+        radius_px: int,
+        intensity_u8: int,
+    ) -> np.ndarray:
+        out = frames_u8.copy()
+        h, w, _c, n = out.shape
+        radius = max(1, int(radius_px))
+        intensity = np.uint8(np.clip(intensity_u8, 0, 255))
+        for i in range(min(n, len(pts))):
+            x, y = pts[i]
+            x = int(np.clip(x, 0, w - 1))
+            y = int(np.clip(y, 0, h - 1))
+            x0 = max(0, x - radius)
+            x1 = min(w, x + radius + 1)
+            y0 = max(0, y - radius)
+            y1 = min(h, y + radius + 1)
+            yy, xx = np.ogrid[y0:y1, x0:x1]
+            mask = (xx - x) ** 2 + (yy - y) ** 2 <= radius ** 2
+            patch = out[y0:y1, x0:x1, :, i]
+            patch[mask] = intensity
+        return out
+
+    def generate_dot_overlay_preview(self) -> None:
+        if self.latest_frames_normalized_u8 is None:
+            return
+        base = self.latest_frames_normalized_u8
+        h, w, _c, n = base.shape
+        try:
+            pts = self._compute_dot_trajectory(n_frames=n, frame_w=w, frame_h=h)
+            frames_with_dot = self._overlay_moving_dot(base, pts, self.dot_size_px, self.dot_intensity)
+        except Exception as exc:
+            messagebox.showerror("Dot overlay failed", str(exc))
+            return
+
+        self.dot_sampled_trajectory = pts
+        self.latest_frames_with_dot_u8 = frames_with_dot
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        run_dir = self.base_output_dir / f"run_{ts}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        gif_path = run_dir / "preview_with_dot.gif"
+        save_gif_from_frames(frames_with_dot, gif_path, GIF_FPS)
+        self.load_and_play_dot_gif(gif_path)
+        self.status_var.set("Dot overlay preview generated.")
 
     def accept_result(self) -> None:
         if self.original_image is None or self.image_path is None:
@@ -724,10 +968,20 @@ class TrajectoryCropApp:
             "display_trajectory_coords": self.trajectory,
             "display_sampled_coords": self.sampled_trajectory,
             "timestamp": ts,
+            "dot_overlay": {
+                "enabled": self.dot_overlay_enabled and self.latest_frames_with_dot_u8 is not None,
+                "size_px": self.dot_size_px,
+                "intensity_uint8": self.dot_intensity,
+                "trajectory_mode": self.dot_trajectory_mode,
+                "trajectory_seed": self.dot_trajectory_seed,
+                "dot_trajectory_xy": self.dot_sampled_trajectory,
+            },
             "saved_files": {
                 "preview_gif": "preview.gif",
                 "frames_unnormalized_npy": "frames_unnormalized.npy",
                 "frames_normalized_uint8_npy": "frames_normalized_uint8.npy",
+                "preview_with_dot_gif": "preview_with_dot.gif",
+                "frames_with_dot_uint8_npy": "frames_with_dot_uint8.npy",
                 "annotated_image_png": "image_with_trajectory.png",
                 "trajectory_points_image_png": "image_with_trajectory_points.png",
                 "trajectory_info_json": "trajectory_info.json",
@@ -743,6 +997,9 @@ class TrajectoryCropApp:
 
         np.save(run_dir / "frames_unnormalized.npy", self.latest_frames_unnormalized)
         np.save(run_dir / "frames_normalized_uint8.npy", self.latest_frames_normalized_u8)
+        if self.latest_frames_with_dot_u8 is not None and self.dot_overlay_enabled:
+            np.save(run_dir / "frames_with_dot_uint8.npy", self.latest_frames_with_dot_u8)
+            save_gif_from_frames(self.latest_frames_with_dot_u8, run_dir / "preview_with_dot.gif", GIF_FPS)
 
         if self.current_annotated_image is not None:
             screenshot_path = run_dir / "image_with_trajectory.png"
@@ -757,7 +1014,7 @@ class TrajectoryCropApp:
     def change_something(self) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("Change Something")
-        dialog.geometry("380x220")
+        dialog.geometry("380x280")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -767,6 +1024,7 @@ class TrajectoryCropApp:
         tk.Button(dialog, text="2) Change crop size", width=30, command=lambda: self._handle_change(dialog, 2)).pack(pady=4)
         tk.Button(dialog, text="3) Change sample frequency", width=30, command=lambda: self._handle_change(dialog, 3)).pack(pady=4)
         tk.Button(dialog, text="4) Upload another image", width=30, command=lambda: self._handle_change(dialog, 4)).pack(pady=4)
+        tk.Button(dialog, text="5) Configure dot overlay", width=30, command=lambda: self._handle_change(dialog, 5)).pack(pady=4)
 
     def _handle_change(self, dialog: tk.Toplevel, choice: int) -> None:
         dialog.destroy()
@@ -814,6 +1072,9 @@ class TrajectoryCropApp:
             return
         if choice == 4:
             self.prompt_image_selection()
+            return
+        if choice == 5:
+            self.configure_dot_overlay()
 
     def _point_inside_image(self, canvas_x: int, canvas_y: int) -> bool:
         if self.base_display_image is None:
