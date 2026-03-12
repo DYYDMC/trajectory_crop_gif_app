@@ -2,6 +2,31 @@
 
 This file tracks implementation explanations by commit hash for this repo.
 
+## 36d3782
+**Refine dot overlay UX and add deterministic recorded trial selection**
+
+What changed:
+- Replaced dot trajectory mode dropdown with dedicated mode buttons (aligned with crop trajectory mode selection style):
+1. `Dot: Approach`
+2. `Dot: Nonapproach`
+3. `Dot: Stationary`
+4. `Dot: Running`
+5. `Dot: Recorded Components`
+6. `Dot: Michaiel Fitted`
+- Updated `Configure Dot Overlay` flow to use selected button mode (no modal dropdown mode selection).
+- Added center-area constraint for dot motion:
+1. dot center is clamped to stay at least one dot diameter away from each crop edge
+2. enforced before overlay rendering for all dot modes
+- Added deterministic trial selection support for `dot: recorded_components`:
+1. trial dropdown with `Auto-select by seed` fallback
+2. explicit trial override is passed into recorded-components generator when selected
+- Extended dot-overlay metadata persistence with reproducibility fields:
+1. `recorded_trial_index` (actual selected trial)
+2. `recorded_trial_index_override` (explicit user choice or null for auto-by-seed)
+
+Why:
+- Removes flaky dropdown UX in dot configuration, improves responsiveness/usability, keeps dot movement safely centered, and makes recorded-components dot runs deterministic and fully documented.
+
 ## 4dad4d2
 **Add cache-first loading for recorded-components trials**
 
