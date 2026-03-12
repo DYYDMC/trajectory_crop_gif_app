@@ -2,6 +2,52 @@
 
 This file tracks implementation explanations by commit hash for this repo.
 
+## cb9f7ec
+**Optimize dot overlay preview by using async in-memory rendering**
+
+What changed:
+- Reworked dot-overlay preview path to avoid disk roundtrip:
+1. removed preview-time `save GIF -> reopen GIF -> decode`
+2. now renders preview frames directly from in-memory NumPy arrays to `PhotoImage`
+- Moved dot preview generation off the Tk main thread:
+1. trajectory generation + overlay rendering run in a background worker thread
+2. UI updates are applied via `root.after(...)`
+3. added in-progress guard and job-id check to avoid stale preview writes
+- Optimized dot rasterization with cached circular masks by radius:
+1. precompute once per radius
+2. reuse mask slices per frame/position
+3. avoid per-frame circle-mask recomputation
+
+Why:
+- Removes the major UI freeze during `Configure Dot Overlay` by eliminating expensive synchronous GIF encode/decode and shifting heavy computation off the UI thread.
+
+## ac8e01b
+**Add configurable moving-dot overlay with secondary GIF preview**
+
+What changed:
+- Added a new post-processing dot-overlay stage on top of generated crop frames (`frames_normalized_uint8`), independent from the selected crop trajectory.
+- Added dot overlay configuration in UI (`Configure Dot Overlay`) with parameters:
+1. `size` in pixels (dot radius)
+2. `intensity` (`uint8`, `0..255`)
+3. independent dot trajectory mode + deterministic seed
+- Reused existing trajectory generation logic family for dot motion:
+1. `approach`
+2. `nonapproach`
+3. `stationary`
+4. `running`
+5. `recorded_components`
+6. `michaiel_fitted`
+- Added a second GIF preview viewport below the current preview to display dot-overlay result (`preview_with_dot.gif`).
+- Added separate playback loop/state for the dot-overlay preview.
+- Extended accept/save outputs when dot overlay is enabled:
+1. `preview_with_dot.gif`
+2. `frames_with_dot_uint8.npy`
+3. `trajectory_info.json -> dot_overlay` metadata block (enabled, size, intensity, trajectory mode/seed, dot path)
+- Added `Change Something -> Configure dot overlay` shortcut.
+
+Why:
+- Enables a final, independent visual marker layer without changing the base trajectory crop pipeline, while keeping outputs reproducible and reviewable in-app.
+
 ## (next commit)
 **Add amplitude gain control for `Recorded Components` trajectories**
 
