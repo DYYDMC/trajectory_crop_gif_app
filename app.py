@@ -86,6 +86,9 @@ class TrajectoryCropApp:
         self.dot_gif_frames: list[ImageTk.PhotoImage] = []
         self.dot_gif_frame_idx = 0
         self.dot_gif_after_id: str | None = None
+        self.dot_preview_job_id = 0
+        self.dot_preview_in_progress = False
+        self.dot_mask_cache: dict[int, np.ndarray] = {}
 
         self._build_ui()
         self.prompt_image_selection()
@@ -839,9 +842,19 @@ class TrajectoryCropApp:
         self.dot_overlay_enabled = True
         self.generate_dot_overlay_preview()
 
-    def _compute_dot_trajectory(self, n_frames: int, frame_w: int, frame_h: int) -> list[tuple[int, int]]:
-        dot_crop_guard = max(2, int(2 * self.dot_size_px + 1))
-        if self.dot_trajectory_mode == "recorded_components":
+    def _compute_dot_trajectory(
+        self,
+        n_frames: int,
+        frame_w: int,
+        frame_h: int,
+        mode: str,
+        seed: int,
+        gain: float,
+        michaiel_mode: str,
+        dot_radius_px: int,
+    ) -> list[tuple[int, int]]:
+        dot_crop_guard = max(2, int(2 * dot_radius_px + 1))
+        if mode == "recorded_components":
             mat_path = Path(__file__).resolve().parent / "Michaiel_gaze_2020" / "Michaiel_et_al.2020_fullDataset.mat"
             sampled_orig, _trial_idx = generate_gaze_from_recorded_components(
                 n_frames=n_frames,
@@ -850,12 +863,12 @@ class TrajectoryCropApp:
                 pano_h=frame_h,
                 crop_size=dot_crop_guard,
                 px_per_deg=35,
-                seed=self.dot_trajectory_seed,
+                seed=seed,
                 trial_index=None,
-                gain=self.recorded_components_gain,
+                gain=gain,
             )
-        elif self.dot_trajectory_mode == "michaiel_fitted":
-            params = self._get_michaiel_params(self.michaiel_mode)
+        elif mode == "michaiel_fitted":
+            params = self._get_michaiel_params(michaiel_mode)
             sampled_orig = generate_gaze_michaiel(
                 n_frames=n_frames,
                 params=params,
@@ -863,23 +876,33 @@ class TrajectoryCropApp:
                 pano_h=frame_h,
                 crop_size=dot_crop_guard,
                 px_per_deg=35,
-                seed=self.dot_trajectory_seed,
+                seed=seed,
             )
         else:
             sampled_orig = generate_gaze(
                 n_frames=n_frames,
-                mode=self.dot_trajectory_mode,
+                mode=mode,
                 pano_w=frame_w,
                 pano_h=frame_h,
                 crop_size=dot_crop_guard,
                 fps=GIF_FPS,
                 px_per_deg=35,
-                seed=self.dot_trajectory_seed,
+                seed=seed,
             )
         out = []
         for x, y in sampled_orig:
             out.append((int(round(x)), int(round(y))))
         return out
+
+    def _get_dot_mask(self, radius_px: int) -> np.ndarray:
+        radius = max(1, int(radius_px))
+        cached = self.dot_mask_cache.get(radius)
+        if cached is not None:
+            return cached
+        yy, xx = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+        mask = (xx * xx + yy * yy) <= (radius * radius)
+        self.dot_mask_cache[radius] = mask
+        return mask
 
     def _overlay_moving_dot(
         self,
@@ -892,6 +915,7 @@ class TrajectoryCropApp:
         h, w, _c, n = out.shape
         radius = max(1, int(radius_px))
         intensity = np.uint8(np.clip(intensity_u8, 0, 255))
+        full_mask = self._get_dot_mask(radius)
         for i in range(min(n, len(pts))):
             x, y = pts[i]
             x = int(np.clip(x, 0, w - 1))
@@ -900,34 +924,85 @@ class TrajectoryCropApp:
             x1 = min(w, x + radius + 1)
             y0 = max(0, y - radius)
             y1 = min(h, y + radius + 1)
-            yy, xx = np.ogrid[y0:y1, x0:x1]
-            mask = (xx - x) ** 2 + (yy - y) ** 2 <= radius ** 2
+            mx0 = x0 - (x - radius)
+            mx1 = mx0 + (x1 - x0)
+            my0 = y0 - (y - radius)
+            my1 = my0 + (y1 - y0)
+            mask = full_mask[my0:my1, mx0:mx1]
             patch = out[y0:y1, x0:x1, :, i]
             patch[mask] = intensity
         return out
 
+    def _set_dot_preview_frames(self, frames_with_dot: np.ndarray) -> None:
+        self.stop_dot_gif_animation()
+        frames: list[ImageTk.PhotoImage] = []
+        n = frames_with_dot.shape[-1]
+        for idx in range(n):
+            frame_np = frames_with_dot[..., idx]
+            frame = Image.fromarray(frame_np, mode="RGB").resize(
+                (self.gif_viewport_size, self.gif_viewport_size), Image.Resampling.NEAREST
+            )
+            frames.append(ImageTk.PhotoImage(frame))
+        if not frames:
+            self.dot_gif_label.configure(image="", text="No dot-overlay GIF yet")
+            self.dot_gif_frames = []
+            self.dot_gif_frame_idx = 0
+            return
+        self.dot_gif_frames = frames
+        self.dot_gif_frame_idx = 0
+        self._tick_dot_gif()
+
     def generate_dot_overlay_preview(self) -> None:
         if self.latest_frames_normalized_u8 is None:
             return
-        base = self.latest_frames_normalized_u8
-        h, w, _c, n = base.shape
-        try:
-            pts = self._compute_dot_trajectory(n_frames=n, frame_w=w, frame_h=h)
-            frames_with_dot = self._overlay_moving_dot(base, pts, self.dot_size_px, self.dot_intensity)
-        except Exception as exc:
-            messagebox.showerror("Dot overlay failed", str(exc))
+        if self.dot_preview_in_progress:
             return
 
-        self.dot_sampled_trajectory = pts
-        self.latest_frames_with_dot_u8 = frames_with_dot
+        base = self.latest_frames_normalized_u8.copy()
+        h, w, _c, n = base.shape
+        mode = self.dot_trajectory_mode
+        seed = self.dot_trajectory_seed
+        gain = self.recorded_components_gain
+        michaiel_mode = self.michaiel_mode
+        radius = self.dot_size_px
+        intensity = self.dot_intensity
+        self.dot_preview_job_id += 1
+        job_id = self.dot_preview_job_id
+        self.dot_preview_in_progress = True
+        self.status_var.set("Generating dot overlay preview...")
 
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        run_dir = self.base_output_dir / f"run_{ts}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        gif_path = run_dir / "preview_with_dot.gif"
-        save_gif_from_frames(frames_with_dot, gif_path, GIF_FPS)
-        self.load_and_play_dot_gif(gif_path)
-        self.status_var.set("Dot overlay preview generated.")
+        def worker() -> None:
+            try:
+                pts = self._compute_dot_trajectory(
+                    n_frames=n,
+                    frame_w=w,
+                    frame_h=h,
+                    mode=mode,
+                    seed=seed,
+                    gain=gain,
+                    michaiel_mode=michaiel_mode,
+                    dot_radius_px=radius,
+                )
+                frames_with_dot = self._overlay_moving_dot(base, pts, radius, intensity)
+                result = {"ok": True, "pts": pts, "frames": frames_with_dot, "error": ""}
+            except Exception as exc:
+                result = {"ok": False, "pts": [], "frames": None, "error": str(exc)}
+
+            def apply_result() -> None:
+                if job_id != self.dot_preview_job_id:
+                    return
+                self.dot_preview_in_progress = False
+                if not result["ok"]:
+                    messagebox.showerror("Dot overlay failed", str(result["error"]))
+                    return
+                self.dot_sampled_trajectory = result["pts"]  # type: ignore[assignment]
+                self.latest_frames_with_dot_u8 = result["frames"]  # type: ignore[assignment]
+                self._set_dot_preview_frames(self.latest_frames_with_dot_u8)
+                self.status_var.set("Dot overlay preview generated.")
+
+            self.root.after(0, apply_result)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def accept_result(self) -> None:
         if self.original_image is None or self.image_path is None:
